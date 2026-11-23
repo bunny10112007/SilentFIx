@@ -1,20 +1,23 @@
-# SilentFix Codebase Architecture & Blueprint
+# SilentFix Codebase Architecture & Blueprint (v2.0)
 
 > **Deterministic Software Repair, Pre-Flight Trust Gate, AWS Audit Ledger, ElevenLabs Voice & AI Terminal Brain**
 >
-> `AGENTIC AI FOR EVERYONE` • `ZERO SHELL INJECTION` • `AWS + ELEVENLABS + GEMINI + WINGET`
+> `AGENTIC AI FOR EVERYONE` • `ZERO SHELL INJECTION` • `AWS + ELEVENLABS + GEMINI + WINGET` • `CLI HEALER` • `WIN 11 COMPAT ENGINE` • `CLOUD SANDBOX`
 
 ---
 
-## 1. System Architecture & Invariants
+## 1. System Architecture & Resilience Guarantees
 
 SilentFix resolves the core vulnerability of agentic AI system management: giving an unconstrained LLM direct access to system shells. Instead of executing LLM-generated scripts directly, SilentFix acts as a **deterministic privilege boundary**.
 
 ### Core Architectural Safety Invariant
-The AI model (Gemini 3.5 Flash Lite) handles user intent translation, follow-up parameter gathering, and structured action planning. All system mutations—package querying, SHA-256 verification, DynamoDB sync, ElevenLabs TTS streaming, and Git terminal configuration—are owned entirely by deterministic Python code with non-shell execution (`shell=False`).
+The AI model (Gemini 3.5 Flash Lite) handles user intent translation, follow-up parameter gathering, and structured action planning. All system mutations—package querying, SHA-256 verification, DynamoDB sync, ElevenLabs TTS streaming, Git terminal configuration, and compatibility registry shims—are owned entirely by deterministic Python code with non-shell execution (`shell=False`).
 
-| Layer | Component File(s) | Primary Responsibility & Security Function |
+| Layer / Pillar | Component File(s) | Primary Mechanism & Safety Guarantee |
 |---|---|---|
+| **Pillar 1: CLI Error Healer** | `app/probes/cli_healer.py`<br>`app/routes/healer.py` | 4-Stage System Probe (Active Process, System PATH, Common Binary Trees, Winget Catalog). Zero raw shell invocation; structured diagnosis payload; deterministic 1-click PATH update. |
+| **Pillar 2: Win 11 Compat Engine** | `app/actions/compat_fixer.py`<br>`app/routes/compat.py` | Per-user registry layers in `HKCU\...\AppCompatFlags\Layers`. Binary SHA-256 untouched; digital signatures preserved; full 1-click undo token snapshot store. |
+| **Pillar 3: AWS Cloud Sandbox** | `app/cloud/aws_sandbox.py`<br>`aws/buildspec-sandbox.yml`<br>`app/routes/sandbox.py` | AWS CodeBuild container dry-run execution with boto3 session discovery. Automatic offline dry-run simulation when AWS credentials or projects are unconfigured. |
 | **Pre-Flight Trust Gate** | `app/probes/software_probe.py`<br>`app/routes/install_stream.py` | Enforces HTTPS sources, validates SHA-256 manifest hashes, and issues single-use 5-minute `probe_tokens`. Returns 403 Forbidden if bypassed. |
 | **Screen Privacy Guard** | `app/security/screen_guard.py`<br>`app/routes/screen.py` | Captures screen in memory using RapidOCR, applies 16px Gaussian blurs to PII, strips hidden prompt injection rules, and enforces `tier3_guided_only` limits. |
 | **State & Cloud Ledger** | `app/state/db.py`<br>`app/cloud/aws_sync.py` | Combines local WAL SQLite with background off-thread AWS DynamoDB audit replication and S3 PII-redacted inspection archiving. |
@@ -32,63 +35,67 @@ SILENTFIX/
 ├── .gitignore                       # Standard ignore rules (.venv, .env, *.db*, etc.)
 ├── pytest.ini                       # Pytest asyncio configuration
 ├── requirements.txt                 # Backend dependencies
+├── README.md                        # Architecture & quickstart documentation
+├── .github/workflows/ci.yml         # CI status checks (pytest-suite & build)
+├── aws/
+│   └── buildspec-sandbox.yml        # AWS CodeBuild container pre-test specification
 ├── app/
-│   ├── __init__.py
-│   ├── main.py                      # FastAPI entry point & lifespan crash sweep
+│   ├── main.py                      # FastAPI entry point, lifespan crash sweep, router mounting
 │   ├── actions/
-│   │   ├── __init__.py
+│   │   ├── compat_fixer.py          # Pillar 2: Windows 11 AppCompatFlags registry shim engine
 │   │   ├── git_configurator.py      # Non-shell git terminal executor (shell=False)
 │   │   └── winget_streamer.py       # Non-shell winget execution & UAC watchdog
 │   ├── ai/
-│   │   ├── __init__.py
 │   │   └── brain.py                 # Gemini BrainDecision structured intent engine
 │   ├── cloud/
-│   │   ├── __init__.py
+│   │   ├── aws_sandbox.py           # Pillar 3: CodeBuild container dry-run & offline simulation
 │   │   └── aws_sync.py              # Off-thread DynamoDB & S3 redacted sync
 │   ├── core/
-│   │   ├── __init__.py
 │   │   └── recovery.py              # Startup crash recovery reconciliation
 │   ├── probes/
-│   │   ├── __init__.py
+│   │   ├── cli_healer.py            # Pillar 1: 4-Stage terminal command error probe
 │   │   └── software_probe.py        # HTTPS enforcement, SHA-256 validation & token gate
 │   ├── routes/
-│   │   ├── __init__.py
 │   │   ├── brain.py                 # Brain decision & execution APIs
+│   │   ├── compat.py                # Pillar 2: /api/compat (apply, undo)
+│   │   ├── healer.py                # Pillar 1: /api/healer (diagnose)
 │   │   ├── install_stream.py        # Pre-flight probe, SSE stream, atomic rollback
 │   │   ├── recovery.py              # Crash recovery pending & resolve APIs
+│   │   ├── sandbox.py               # Pillar 3: /api/sandbox (pretest, runs)
 │   │   ├── screen.py                # In-memory screen guard APIs
 │   │   └── voice.py                 # ElevenLabs low-latency voice proxy
 │   ├── security/
-│   │   ├── __init__.py
 │   │   └── screen_guard.py          # RapidOCR PII Gaussian blur & injection guard
 │   └── state/
-│       ├── __init__.py
 │       └── db.py                    # SQLite WAL ledger & atomic CAS rollback lock
 ├── frontend/
 │   ├── package.json                 # React 18, Vite, Tailwind CSS, Lucide icons
-│   ├── vite.config.ts
-│   ├── tsconfig.json
-│   ├── index.html
+│   ├── vite.config.ts               # Vite configuration with API proxy
+│   ├── dist/                        # Production assets (served by FastAPI)
 │   └── src/
-│       ├── App.tsx                  # Complete single-page architecture dashboard
-│       ├── index.css
-│       ├── main.tsx
+│       ├── App.tsx                  # Unified architecture & resilience dashboard
 │       ├── components/
+│       │   ├── AwsSandboxSection.tsx# Pillar 3 UI: CodeBuild pre-test container runner
+│       │   ├── CliHealerSection.tsx # Pillar 1 UI: 4-Stage command error diagnosis & 1-click PATH
 │       │   ├── CloudLedgerSection.tsx
 │       │   ├── GeminiBrainSection.tsx
 │       │   ├── InstallStreamSection.tsx
 │       │   ├── RecoveryBanner.tsx
 │       │   ├── ScreenGuardSection.tsx
 │       │   ├── TrustGateSection.tsx
-│       │   └── VoiceGuidePlayer.tsx
+│       │   ├── VoiceGuidePlayer.tsx
+│       │   └── Win11CompatSection.tsx # Pillar 2 UI: AppCompatFlags shims & 1-click undo
 │       └── hooks/
 │           ├── useInstallStream.ts  # Named-event SSE hook & replay deduplication
 │           └── useVoiceGuide.ts     # HTML5 client audio queue & proxy consumer
 └── tests/
-    ├── __init__.py
-    ├── test_crash_recovery.py       # Startup crash sweep tests
+    ├── test_aws_sandbox.py          # Pillar 3: CodeBuild dispatch & offline simulation
+    ├── test_cli_healer.py           # Pillar 1: Multi-shell parsing & 4-stage probe
+    ├── test_compat_fixer.py         # Pillar 2: Layer string builder & undo snapshot store
+    ├── test_crash_recovery.py       # Lifespan startup crash recovery tests
     ├── test_gemini_brain.py         # Structured output & non-shell execution tests
     ├── test_screen_guard.py         # In-memory PII blurring & injection tests
+    ├── test_spa_security.py         # SPA security & route tests
     ├── test_sqlite_ledger.py        # WAL mode & 409 Conflict atomic CAS tests
     ├── test_trust_gate.py           # HTTPS enforcement & token gate 403 tests
     └── test_voice_and_cloud.py      # ElevenLabs 204 fallback & DynamoDB/S3 tests
@@ -96,63 +103,94 @@ SILENTFIX/
 
 ---
 
-## 3. Core Security Invariants Verified
+## 3. Core Resilience Pillars
 
-1. **Pre-Flight Trust Gate (`app/probes/software_probe.py`)**:
-   - Rejects unencrypted HTTP sources with `400 Bad Request`.
-   - Validates 64-character SHA-256 manifest hash.
-   - Issues 18-byte URL-safe `probe_token` with 5-minute TTL.
-   - Single-use eviction: token is consumed on initial execution; reuse or direct calls without a token return `403 Forbidden`.
+### Pillar 1: Terminal CLI Error Healer
+- **Regex Multi-Shell Extraction**: Supports Windows CMD (`'x' is not recognized`), PowerShell (`The term 'x' is not recognized`), Bash (`bash: x: command not found`), and Zsh (`zsh: command not found: x`).
+- **4-Stage Probe**:
+  1. `ALREADY_IN_PATH`: Verifies if binary is present in active PATH.
+  2. `FOUND_ON_DISK_NEEDS_PATH`: Scans standard locations (`Program Files`, `msys64`, `cygwin64`, `AppData`, `.cargo/bin`, `go/bin`). Emits deterministic `setx PATH` / `export PATH` commands.
+  3. `AVAILABLE_VIA_WINGET`: Matches known CLI map (`git`, `node`, `docker`, `kubectl`, `terraform`, `aws`, `az`, `gh`, `cargo`, `jq`, `ffmpeg`, etc.) and provides non-interactive Winget commands.
+  4. `NOT_FOUND`: Gracefully informs user when binary cannot be identified.
 
-2. **Atomic Rollback Compare-and-Swap (`app/state/db.py`)**:
-   - Uses `BEGIN IMMEDIATE` transaction locking on SQLite WAL.
-   - Concurrent rollback race conditions reject subsequent callers with `409 Conflict`.
+### Pillar 2: Windows 11 Compatibility Shim Engine
+- **Non-Destructive Per-User Registry**: Applies shims to `HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers`.
+- **Integrity Guarantee**: Executable binary bytes, SHA-256 hashes, and digital signatures remain **completely untouched**.
+- **Supported Shims**: OS emulation (`WIN8RTM`, `WIN7RTM`, `VISTASP2`, `WINXPSP3`), High-DPI flags (`HIGHDPIAWARE`, `DPIUNAWARE`, `GDIDPISCALING`, `640X480`, `256COLOR`), and `RUNASADMIN`.
+- **1-Click Undo Token Store**: On application, mints an unguessable 16-byte `undo_token`. Calling `/api/compat/undo` restores previous registry settings immediately and evicts the token.
 
-3. **Safe Non-Shell Subprocess Execution (`app/actions/winget_streamer.py`, `app/actions/git_configurator.py`)**:
-   - Subprocesses launched strictly with `shell=False` via `asyncio.create_subprocess_exec`.
-   - Arguments passed as explicit lists; prevents command string injection attacks.
-
-4. **Screen Privacy Guard (`app/security/screen_guard.py`)**:
-   - Screen inspection executes entirely in RAM (zero disk writes of unredacted data).
-   - Detects prompt injection signatures (`ignore previous instructions`, `powershell -enc`, etc.) and restricts execution to `tier3_guided_only`.
-   - Applies 16px Gaussian blur directly onto image memory for emails, payment cards, and authentication tokens.
-
-5. **Voice Accessibility & Graceful Fallback (`app/routes/voice.py`)**:
-   - Streams speech using ElevenLabs `eleven_flash_v2_5`.
-   - Returns clean HTTP `204 No Content` if `ELEVENLABS_API_KEY` is not provided, maintaining silent UI execution.
-
-6. **Off-Thread Cloud Audit Replication (`app/cloud/aws_sync.py`)**:
-   - Offloads DynamoDB and S3 replication to worker threads (`asyncio.to_thread`), preventing network jitter from blocking the local async event loop.
+### Pillar 3: AWS Cloud Pre-Test Sandbox
+- **CodeBuild Container Dry-Run**: Dispatches uninstalled packages to isolated AWS CodeBuild Windows containers (`aws/buildspec-sandbox.yml`) to test silent unattended installs before touching user machines.
+- **Offline Simulation Fallback**: When AWS credentials or CodeBuild projects are unconfigured, automatically executes deterministic offline pre-test simulations with `backend="offline_simulated"`.
 
 ---
 
-## 4. Running the System
+## 4. Verification & Test Execution Suite (44/44 Passing)
 
-### Prerequisites
-- Python 3.10+ (tested on Python 3.14)
-- Node.js 18+ and npm
+All 44 automated tests across all 9 modules and 3 resilience pillars pass cleanly:
 
-### Backend Setup
+```text
+============================= test session starts =============================
+platform win32 -- Python 3.14.8, pytest-9.2.0, pluggy-1.7.0
+plugins: anyio-4.15.1, asyncio-1.5.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=function
+
+tests/test_aws_sandbox.py::test_cloud_pretest_offline_simulation PASSED
+tests/test_aws_sandbox.py::test_cloud_pretest_request_validation PASSED
+tests/test_aws_sandbox.py::test_sandbox_api_endpoints PASSED
+tests/test_cli_healer.py::test_extract_missing_command_various_shells PASSED
+tests/test_cli_healer.py::test_diagnose_terminal_error_winget_fallback PASSED
+tests/test_cli_healer.py::test_diagnose_terminal_error_unknown_command PASSED
+tests/test_cli_healer.py::test_healer_diagnoses_missing_git PASSED
+tests/test_compat_fixer.py::test_build_layer_string PASSED
+tests/test_compat_fixer.py::test_apply_shim_rejects_non_exe PASSED
+tests/test_compat_fixer.py::test_apply_shim_rejects_non_existent_file PASSED
+tests/test_compat_fixer.py::test_compat_api_apply_and_undo_flow PASSED
+tests/test_crash_recovery.py::test_startup_crash_recovery_sweep_detects_interrupted_sessions PASSED
+tests/test_crash_recovery.py::test_resolve_recovery_via_rollback PASSED
+tests/test_crash_recovery.py::test_resolve_recovery_via_dismiss PASSED
+tests/test_gemini_brain.py::test_missing_parameters_transitions_to_needs_info PASSED
+tests/test_gemini_brain.py::test_complete_intent_resolves_and_mints_token PASSED
+tests/test_gemini_brain.py::test_intent_prioritization_and_comma_separated_name PASSED
+tests/test_gemini_brain.py::test_reject_insecure_intent PASSED
+tests/test_gemini_brain.py::test_safe_non_shell_git_execution PASSED
+tests/test_gemini_brain.py::test_name_extraction_supports_hyphens_and_accents PASSED
+tests/test_gemini_brain.py::test_authorized_brain_execution_with_token PASSED
+tests/test_screen_guard.py::test_detect_injections_catches_malicious_commands PASSED
+tests/test_screen_guard.py::test_detect_pii_identifies_sensitive_entities PASSED
+tests/test_screen_guard.py::test_process_screen_image_in_memory_applies_gaussian_blur PASSED
+tests/test_screen_guard.py::test_sample_screen_inspection_generation PASSED
+tests/test_screen_guard.py::test_process_screen_handles_inverted_coordinates PASSED
+tests/test_spa_security.py::test_spa_directory_traversal_blocked PASSED
+tests/test_spa_security.py::test_spa_does_not_swallow_api_404 PASSED
+tests/test_sqlite_ledger.py::test_sqlite_wal_mode_configured PASSED
+tests/test_sqlite_ledger.py::test_session_lifecycle_and_event_logging PASSED
+tests/test_sqlite_ledger.py::test_atomic_rollback_lock_cas_and_409_conflict PASSED
+tests/test_trust_gate.py::test_enforce_https_source_success PASSED
+tests/test_trust_gate.py::test_enforce_https_source_rejects_http PASSED
+tests/test_trust_gate.py::test_validate_sha256_string PASSED
+tests/test_trust_gate.py::test_probe_token_issuance_and_single_use_eviction PASSED
+tests/test_trust_gate.py::test_probe_token_blocks_package_substitution PASSED
+tests/test_trust_gate.py::test_verify_package_manifest_known_catalog PASSED
+tests/test_trust_gate.py::test_verify_package_manifest_rejects_catalog_hash_mismatch PASSED
+tests/test_trust_gate.py::test_verify_package_manifest_requires_hash_for_unknown_package PASSED
+tests/test_trust_gate.py::test_probe_token_blocks_source_substitution PASSED
+tests/test_voice_and_cloud.py::test_elevenlabs_voice_returns_204_when_no_api_key PASSED
+tests/test_voice_and_cloud.py::test_off_thread_dynamodb_fallback_without_cloud_credentials PASSED
+tests/test_voice_and_cloud.py::test_privacy_preserving_s3_archive_telemetry PASSED
+tests/test_voice_and_cloud.py::test_cloud_audit_endpoint_and_session_token PASSED
+
+============================= 44 passed in 8.77s ==============================
+```
+
+---
+
+## 5. Quickstart
+
+To run the unified application (FastAPI serving APIs and the production React SPA):
+
 ```bash
-pip install -r requirements.txt
+# Start backend on localhost:8000
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
-
-### Frontend Setup
-```bash
-cd frontend
-npm install
-npm run build
-```
-When built, FastAPI automatically serves the SPA at `http://127.0.0.1:8000/`.
-For interactive live frontend development with hot-reloading:
-```bash
-npm run dev
-# Open http://localhost:5173
-```
-
-### Running Test Suite
-```bash
-pytest -v
-```
-All 23 automated security and architecture invariant tests execute and pass in under 5 seconds.
+Navigate to `http://127.0.0.1:8000` to interact with the full SilentFix architecture and all resilience pillars.

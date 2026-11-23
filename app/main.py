@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.recovery import sweep_interrupted_sessions
-from app.routes import brain, install_stream, recovery, screen, voice
+from app.routes import brain, compat, healer, install_stream, recovery, sandbox, screen, voice
 from app.state.db import init_db
 
 # Configure structured logging
@@ -71,13 +71,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Chunk 2 (Router Mounting): Connects modular routers using strict path prefixes,
-# keeping installer endpoints, screen guard APIs, and crash recovery separate.
+# Modular routers using strict path prefixes
 app.include_router(install_stream.router)
 app.include_router(screen.router)
 app.include_router(recovery.router)
 app.include_router(voice.router)
 app.include_router(brain.router)
+app.include_router(healer.router)
+app.include_router(compat.router)
+app.include_router(sandbox.router)
 
 
 @app.get("/api/health")
@@ -90,6 +92,9 @@ async def health_check():
         "database_wal_active": True,
         "pre_flight_trust_gate": "active",
         "rapidocr_screen_guard": "active",
+        "cli_healer": "active",
+        "win11_compat_engine": "active",
+        "aws_cloud_sandbox": "active",
         "recovery_required_count": len(getattr(app.state, "startup_reconciled_sessions", [])),
     }
 

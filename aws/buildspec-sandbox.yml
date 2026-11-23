@@ -1,0 +1,10 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+      - powershell -NoProfile -Command "Write-Host 'SilentFix Cloud Pre-Test: $env:SF_PACKAGE_ID ($env:SF_SCOPE)'"
+      - powershell -NoProfile -Command "winget install --id $env:SF_PACKAGE_ID --exact --source winget --scope $env:SF_SCOPE --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"
+  post_build:
+    commands:
+      - powershell -NoProfile -Command "winget list --id $env:SF_PACKAGE_ID --exact --source winget"

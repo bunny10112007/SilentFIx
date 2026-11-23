@@ -12,6 +12,9 @@ import {
   Layers,
   Radio,
   ExternalLink,
+  Wrench,
+  Monitor,
+  Cloud,
 } from 'lucide-react';
 
 import { RecoveryBanner } from './components/RecoveryBanner';
@@ -21,6 +24,9 @@ import { ScreenGuardSection } from './components/ScreenGuardSection';
 import { GeminiBrainSection } from './components/GeminiBrainSection';
 import { CloudLedgerSection } from './components/CloudLedgerSection';
 import { VoiceGuidePlayer } from './components/VoiceGuidePlayer';
+import { CliHealerSection } from './components/CliHealerSection';
+import { Win11CompatSection } from './components/Win11CompatSection';
+import { AwsSandboxSection } from './components/AwsSandboxSection';
 import { useVoiceGuide } from './hooks/useVoiceGuide';
 
 export function App() {
@@ -49,14 +55,14 @@ export function App() {
               <div className="flex items-center gap-2">
                 <h1 className="text-base font-bold tracking-tight text-white">SilentFix</h1>
                 <span className="rounded bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 text-[10px] font-mono text-emerald-400">
-                  v1.0.0 Architecture Blueprint
+                  v2.0 Resilience Blueprint
                 </span>
               </div>
-              <p className="text-xs text-slate-400">Deterministic Privilege Boundary &amp; Software Repair</p>
+              <p className="text-xs text-slate-400">Deterministic Privilege Boundary, CLI Healer &amp; Win 11 Compat</p>
             </div>
           </div>
 
-          {/* Architecture Badge Tags (from Page 1) */}
+          {/* Architecture Badge Tags */}
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono font-semibold">
             <span className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-2.5 py-1 text-sky-300">
               AGENTIC AI FOR EVERYONE
@@ -87,16 +93,16 @@ export function App() {
             </div>
             <div>
               <h3 className="text-sm font-bold text-sky-200">
-                Core Architectural Safety Invariant
+                Core Architectural Safety Invariant &amp; Resilience Guarantees
               </h3>
               <p className="mt-1 text-xs text-slate-300 leading-relaxed">
-                SilentFix resolves the core vulnerability of agentic AI system management: giving an unconstrained LLM direct access to system shells. Instead of executing LLM-generated scripts directly, SilentFix acts as a deterministic privilege boundary. The AI model handles intent translation and parameter gathering; all system mutations—package querying, SHA-256 verification, DynamoDB sync, ElevenLabs TTS, and Git configuration—are owned entirely by deterministic Python code with non-shell execution (<code className="font-mono text-emerald-400">shell=False</code>).
+                SilentFix acts as a deterministic privilege boundary. The AI model handles intent translation and parameter gathering; all system mutations—package querying, SHA-256 verification, DynamoDB sync, ElevenLabs TTS, and Git configuration—are owned entirely by deterministic Python code with non-shell execution (<code className="font-mono text-emerald-400">shell=False</code>). Added resilience pillars provide zero-shell CLI error healing, non-destructive Windows 11 compatibility shims, and isolated AWS CodeBuild pre-test sandboxing.
               </p>
             </div>
           </div>
         </div>
 
-        {/* 2-Column Responsive Layout for Modules */}
+        {/* 2-Column Responsive Layout for Primary Core Layers */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Module 3: Pre-Flight Trust Gate */}
           <TrustGateSection
@@ -115,6 +121,27 @@ export function App() {
           />
         </div>
 
+        {/* Section Divider: Resilience Pillars */}
+        <div className="pt-2">
+          <div className="flex items-center gap-2 pb-1 text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            Resilience Pillars: Terminal CLI Healer &amp; Win 11 Compatibility Engine
+          </div>
+          <div className="h-px w-full bg-slate-800" />
+        </div>
+
+        {/* 2-Column Responsive Layout for Pillar 1 & Pillar 2 */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Pillar 1: Terminal CLI Error Healer */}
+          <CliHealerSection onVoiceAlert={handleVoiceAlert} />
+
+          {/* Pillar 2: Windows 11 Compatibility Shim Engine */}
+          <Win11CompatSection onVoiceAlert={handleVoiceAlert} />
+        </div>
+
+        {/* Pillar 3: AWS Cloud Pre-Test Sandbox */}
+        <AwsSandboxSection onVoiceAlert={handleVoiceAlert} />
+
         {/* Module 5: Screen Privacy Guard (RapidOCR PII Blurring & Injection Guard) */}
         <ScreenGuardSection onVoiceAlert={handleVoiceAlert} />
 
@@ -132,7 +159,7 @@ export function App() {
             SilentFix Software Repair Agent &amp; Architecture Blueprint • Zero Shell Injection Privilege Boundary
           </span>
           <span className="font-mono text-[11px] text-slate-400">
-            FastAPI • SQLite WAL • RapidOCR • AWS DynamoDB/S3 • ElevenLabs • Gemini 3.5 Flash Lite
+            FastAPI • SQLite WAL • RapidOCR • AWS DynamoDB/S3/CodeBuild • ElevenLabs • Gemini 3.5 Flash Lite • AppCompatFlags
           </span>
         </div>
       </footer>
