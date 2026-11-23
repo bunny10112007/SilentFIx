@@ -1,0 +1,22 @@
+# Python & Environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Environment Variables & Secrets
+.env
+.env.local
+
+# Database & Runtime Logs
+silentfix_state.db*
+.silentfix-logs/
+*.log
+
+# Frontend Builds & Dependencies
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
