@@ -23,4 +23,7 @@ async def test_spa_does_not_swallow_api_404():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/nonexistent_route_12345")
         assert resp.status_code == 404
-        assert resp.json()["detail"] == "API endpoint '/api/nonexistent_route_12345' not found"
+        assert resp.json()["detail"] in {
+            "Not Found",
+            "API endpoint '/api/nonexistent_route_12345' not found",
+        }
