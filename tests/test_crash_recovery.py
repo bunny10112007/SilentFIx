@@ -10,6 +10,7 @@ from app.core.recovery import sweep_interrupted_sessions, get_pending_recoveries
 async def setup_test_db(tmp_path, monkeypatch):
     test_db = str(tmp_path / "test_recovery.db")
     monkeypatch.setenv("DATABASE_PATH", test_db)
+    monkeypatch.setenv("ENABLE_MOCK_WINGET", "true")
     await init_db()
     yield test_db
 
@@ -53,3 +54,28 @@ async def test_resolve_recovery_via_rollback():
 
     s = await get_session("sess_interrupted")
     assert s["status"] == "ROLLED_BACK"
+
+
+@pytest.mark.asyncio
+async def test_resolve_recovery_via_dismiss():
+    """1-Click recovery resolution safely dismisses interrupted session."""
+    from fastapi import HTTPException
+
+    await create_session("sess_dismiss_me", "Git.Git", "Git", "winget", status_val="EXECUTING")
+    await sweep_interrupted_sessions()
+
+    res = await resolve_recovery_session("sess_dismiss_me", action="dismiss")
+    assert res["status"] == "DISMISSED"
+
+    s = await get_session("sess_dismiss_me")
+    assert s["status"] == "DISMISSED"
+
+    # Reject non-existent session with 404
+    with pytest.raises(HTTPException) as exc:
+        await resolve_recovery_session("non_existent_session_id", action="dismiss")
+    assert exc.value.status_code == 404
+
+    # Reject invalid action with 400
+    with pytest.raises(HTTPException) as exc_act:
+        await resolve_recovery_session("sess_dismiss_me", action="invalid_action")
+    assert exc_act.value.status_code == 400

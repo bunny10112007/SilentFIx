@@ -141,11 +141,19 @@ def process_screen_image_in_memory(
         pii_types = detect_pii(cleaned_line)
 
         x0, y0, x1, y1 = box_raw
+        # Normalize in case OCR coordinates are inverted
+        x0, x1 = min(x0, x1), max(x0, x1)
+        y0, y1 = min(y0, y1), max(y0, y1)
+
         # Ensure coordinates are within image bounds
         x0 = max(0, x0)
         y0 = max(0, y0)
         x1 = min(image_copy.width, x1)
         y1 = min(image_copy.height, y1)
+
+        # Skip zero-sized or invalid regions
+        if x1 <= x0 or y1 <= y0:
+            continue
 
         if injections:
             # Chunk 1: Flagged text is blocked and highlighted in red on zone overlay

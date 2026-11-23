@@ -97,7 +97,10 @@ export function useVoiceGuide(): UseVoiceGuideReturn {
         setIsPlaying(true);
       };
 
+      let cleanedUp = false;
       const cleanupAndContinue = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
         URL.revokeObjectURL(blobUrl);
         currentAudioRef.current = null;
         isProcessingRef.current = false;

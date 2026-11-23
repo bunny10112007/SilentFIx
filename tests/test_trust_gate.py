@@ -80,3 +80,39 @@ async def test_verify_package_manifest_known_catalog():
     assert verdict.probe_token is not None
     assert verdict.expires_in_seconds == 300
     assert "PASSED" in verdict.security_verdict
+
+
+@pytest.mark.asyncio
+async def test_verify_package_manifest_rejects_catalog_hash_mismatch():
+    """Supplying a tampered hash for a catalog package must fail with 400 Bad Request."""
+    tampered_hash = "0" * 64
+    with pytest.raises(HTTPException) as exc:
+        await verify_package_manifest(
+            package_id="Git.Git",
+            source_url="https://github.com/git-for-windows/git/releases",
+            sha256_hash=tampered_hash,
+        )
+    assert exc.value.status_code == 400
+    assert "does not match authentic catalog hash" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_verify_package_manifest_requires_hash_for_unknown_package():
+    """Uncatalogued package without a SHA-256 hash must be rejected with 400."""
+    with pytest.raises(HTTPException) as exc:
+        await verify_package_manifest(
+            package_id="Custom.Unknown.App",
+            source_url="https://example.com/app.exe",
+        )
+    assert exc.value.status_code == 400
+    assert "Explicit SHA-256 manifest hash is required" in exc.value.detail
+
+
+def test_probe_token_blocks_source_substitution():
+    """Tokens bound to source A cannot be consumed with a different source URL."""
+    token = mint_probe_token("Git.Git", "https://trusted-site.com/git.exe", "a" * 64)
+    with pytest.raises(HTTPException) as exc:
+        validate_and_evict_token(token, "Git.Git", "https://untrusted-site.com/git.exe")
+    assert exc.value.status_code == 403
+    assert "Token bound to source" in exc.value.detail
+

@@ -45,14 +45,31 @@ async def execute_safe_git_command(args: list[str]) -> CommandExecutionOutput:
     git_bin = shutil.which("git") or shutil.which("git.exe") or "git"
 
     # Enforce argument validation
-    # Refuse any argument containing shell piping, redirection, or backticks
+    # Refuse any argument containing shell piping, redirection, newlines, or backticks
     for arg in args:
-        if any(c in arg for c in [";", "|", "&", ">", "<", "`", "$"]):
+        if any(c in arg for c in [";", "|", "&", ">", "<", "`", "$", "\n", "\r"]):
             return CommandExecutionOutput(
                 command=[git_bin] + args,
                 return_code=-1,
                 stdout="",
-                stderr=f"Security Violation: Argument '{arg}' contains shell redirection/pipe characters. Execution blocked.",
+                stderr=f"Security Violation: Argument '{arg}' contains shell redirection/pipe characters or newlines. Execution blocked.",
+                success=False,
+            )
+
+    # Block dangerous git options that execute external binaries
+    for arg in args:
+        lower_arg = arg.lower()
+        if (
+            lower_arg.startswith("-c")
+            or lower_arg.startswith("--exec-path")
+            or lower_arg.startswith("--upload-pack")
+            or "fsmonitor" in lower_arg
+        ):
+            return CommandExecutionOutput(
+                command=[git_bin] + args,
+                return_code=-1,
+                stdout="",
+                stderr=f"Security Violation: Argument '{arg}' contains disallowed dangerous git flag. Execution blocked.",
                 success=False,
             )
 

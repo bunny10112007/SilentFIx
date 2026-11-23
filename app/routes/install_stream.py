@@ -17,7 +17,8 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.actions.winget_streamer import stream_winget_install
+from app.actions.winget_streamer import execute_winget_uninstall, stream_winget_install
+from app.cloud.aws_sync import get_cloud_audit_history, replicate_audit_record_to_dynamodb
 from app.probes.software_probe import (
     VERIFIED_PACKAGE_CATALOG,
     PreFlightProbeRequest,
@@ -37,6 +38,31 @@ from app.state.db import (
 )
 
 logger = logging.getLogger("silentfix.install_route")
+
+# In-memory registry for single-instance installer execution & live SSE pub/sub
+_active_install_tasks: dict[str, asyncio.Task] = {}
+_session_subscribers: dict[str, list[asyncio.Queue]] = {}
+
+
+async def _run_install_job(session_id: str, package_id: str, source: str) -> None:
+    """Executes installation exactly once per session and broadcasts events to all live SSE subscribers."""
+    try:
+        async for prog_event in stream_winget_install(
+            session_id=session_id,
+            package_id=package_id,
+            source=source,
+        ):
+            subscribers = _session_subscribers.get(session_id, [])
+            for q in list(subscribers):
+                try:
+                    q.put_nowait(prog_event)
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.error("Error in background install job for %s: %s", session_id, exc)
+    finally:
+        _active_install_tasks.pop(session_id, None)
+
 
 router = APIRouter(prefix="/api/install", tags=["Install & Pre-Flight Trust Gate"])
 
@@ -118,6 +144,13 @@ async def start_installation(req: StartInstallRequest) -> dict[str, Any]:
 
     logger.info("Created session %s with SNAPSHOTTED state for %s", session_id, req.package_id)
 
+    # Off-thread DynamoDB audit sync for installation initiation
+    await replicate_audit_record_to_dynamodb(
+        entity_type="INSTALL_SESSION",
+        entity_id=session_id,
+        payload=snapshot_data,
+    )
+
     return {
         "status": "ready",
         "session_id": session_id,
@@ -151,45 +184,71 @@ async def stream_installation(
         effective_last_id = last_event_id
 
     async def event_generator():
-        # First: Replay any past events strictly after last_event_id (deduplication)
-        past_events = await get_session_events(session_id, after_event_id=effective_last_id)
-        last_yielded_id = effective_last_id
-        for ev in past_events:
-            ev_id = ev["event_id"]
-            if ev_id > last_yielded_id:
-                last_yielded_id = ev_id
-                data_json = json.dumps({
-                    "session_id": session_id,
-                    "phase": ev["phase"],
-                    "progress": ev["progress"],
-                    "message": ev["message"],
-                    "timestamp": ev["timestamp"],
-                })
-                yield f"id: {ev_id}\nevent: {ev['phase']}\ndata: {data_json}\n\n"
+        client_queue: asyncio.Queue = asyncio.Queue()
+        if session_id not in _session_subscribers:
+            _session_subscribers[session_id] = []
+        _session_subscribers[session_id].append(client_queue)
 
-        # If session is already terminal, close stream
-        if session["status"] in ("COMPLETED", "FAILED", "ROLLED_BACK", "UAC_CANCELLED"):
-            yield f"event: CLOSE\ndata: {json.dumps({'reason': 'Session already in terminal state'})}\n\n"
-            return
+        try:
+            # 1. Replay historical events strictly after last_event_id (deduplication)
+            past_events = await get_session_events(session_id, after_event_id=effective_last_id)
+            last_yielded_id = effective_last_id
+            for ev in past_events:
+                ev_id = ev["event_id"]
+                if ev_id > last_yielded_id:
+                    last_yielded_id = ev_id
+                    data_json = json.dumps({
+                        "session_id": session_id,
+                        "phase": ev["phase"],
+                        "progress": ev["progress"],
+                        "message": ev["message"],
+                        "timestamp": ev["timestamp"],
+                    })
+                    yield f"id: {ev_id}\nevent: {ev['phase']}\ndata: {data_json}\n\n"
 
-        # Execute winget install stream
-        package_id = session["package_id"]
-        source = session["source"]
+            # 2. Check if session was already terminal
+            latest_session = await get_session(session_id)
+            if latest_session and latest_session["status"] in ("COMPLETED", "FAILED", "ROLLED_BACK", "UAC_CANCELLED"):
+                yield f"event: CLOSE\ndata: {json.dumps({'reason': 'Session already in terminal state'})}\n\n"
+                return
 
-        async for prog_event in stream_winget_install(
-            session_id=session_id,
-            package_id=package_id,
-            source=source,
-        ):
-            if prog_event.event_id > last_yielded_id:
-                last_yielded_id = prog_event.event_id
-                data_json = json.dumps(prog_event.to_dict())
-                yield f"id: {prog_event.event_id}\nevent: {prog_event.phase}\ndata: {data_json}\n\n"
+            # 3. Ensure single background installation task is running
+            if session_id not in _active_install_tasks:
+                package_id = session["package_id"]
+                source = session["source"]
+                _active_install_tasks[session_id] = asyncio.create_task(
+                    _run_install_job(session_id=session_id, package_id=package_id, source=source)
+                )
 
-            # Terminal indicators close connection
-            if prog_event.phase in ("COMPLETED", "FAILED", "UAC_CANCELLED", "ROLLED_BACK"):
-                yield f"event: CLOSE\ndata: {json.dumps({'reason': f'Terminal phase reached: {prog_event.phase}'})}\n\n"
-                break
+            # 4. Stream real-time events from subscriber queue
+            while True:
+                try:
+                    prog_event = await asyncio.wait_for(client_queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Keep-alive heartbeat comment to prevent client/proxy timeouts
+                    yield ": keepalive\n\n"
+                    # Check if session finished while idle
+                    sess_check = await get_session(session_id)
+                    if sess_check and sess_check["status"] in ("COMPLETED", "FAILED", "ROLLED_BACK", "UAC_CANCELLED"):
+                        yield f"event: CLOSE\ndata: {json.dumps({'reason': 'Terminal state reached'})}\n\n"
+                        break
+                    continue
+
+                if prog_event.event_id > last_yielded_id:
+                    last_yielded_id = prog_event.event_id
+                    data_json = json.dumps(prog_event.to_dict())
+                    yield f"id: {prog_event.event_id}\nevent: {prog_event.phase}\ndata: {data_json}\n\n"
+
+                if prog_event.phase in ("COMPLETED", "FAILED", "UAC_CANCELLED", "ROLLED_BACK"):
+                    yield f"event: CLOSE\ndata: {json.dumps({'reason': f'Terminal phase reached: {prog_event.phase}'})}\n\n"
+                    break
+        finally:
+            # Clean up subscriber queue on disconnect
+            if session_id in _session_subscribers:
+                if client_queue in _session_subscribers[session_id]:
+                    _session_subscribers[session_id].remove(client_queue)
+                if not _session_subscribers[session_id]:
+                    _session_subscribers.pop(session_id, None)
 
     return StreamingResponse(
         event_generator(),
@@ -227,13 +286,25 @@ async def rollback_installation(
         message=f"Executing safe non-shell rollback for {package_id}...",
     )
 
-    # Simulate or execute uninstallation
-    await asyncio.sleep(1.0)
+    # Execute deterministic non-shell uninstallation
+    success, uninstall_out = await execute_winget_uninstall(package_id)
+    rollback_details = (
+        f"Package {package_id} rolled back successfully. Output: {uninstall_out[:100]}"
+        if success
+        else f"Rollback finished with warning for {package_id}: {uninstall_out[:100]}"
+    )
 
     # Complete rollback
     await mark_rollback_completed(
         session_id=session_id,
-        details=f"Package {package_id} completely rolled back. Files and registry restored.",
+        details=rollback_details,
+    )
+
+    # Off-thread DynamoDB audit sync for rollback
+    await replicate_audit_record_to_dynamodb(
+        entity_type="ROLLBACK_SESSION",
+        entity_id=session_id,
+        payload={"session_id": session_id, "package_id": package_id, "status": "ROLLED_BACK", "reason": reason},
     )
 
     return {
@@ -242,6 +313,13 @@ async def rollback_installation(
         "message": f"Successfully rolled back {package_id}.",
         "lock_info": lock_result,
     }
+
+
+@router.get("/cloud-audit")
+async def get_cloud_audit(limit: int = 50) -> dict[str, Any]:
+    """Retrieve recent cloud audit replication records."""
+    records = await get_cloud_audit_history(limit=limit)
+    return {"records": records}
 
 
 @router.get("/sessions")

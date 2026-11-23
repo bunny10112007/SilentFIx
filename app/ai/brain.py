@@ -114,13 +114,13 @@ def deterministic_intent_resolution(prompt: str, context: Optional[dict[str, Any
     email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", cleaned)
     user_email = email_match.group(0) if email_match else None
 
-    # Extract name (e.g. "name is Alice Cooper", "name Alice Smith", "for Alice", "user: Bob")
+    # Extract name (e.g. "name is Alice Cooper", "name Alice Smith", "for Jean-Luc", "author: René O'Connor")
     user_name = None
     name_patterns = [
-        r"name\s*(?:is|:|=)?\s*['\"]?([A-Za-z]+(?:\s+[A-Za-z]+)*)['\"]?(?=\s+(?:and\s+)?email|\s*$|\s*<)",
-        r"user\.name\s+['\"]?([A-Za-z\s]+)['\"]?",
-        r"\bfor\s+([A-Za-z]+(?:\s+[A-Za-z]+)*)\b(?=\s+(?:with|and|email)|\s*$)",
-        r"author\s+['\"]?([A-Za-z\s]+)['\"]?",
+        r"name\s*(?:is|:|=)?\s*['\"]?([A-Za-z\u00C0-\u017F]+(?:[\s\-'][A-Za-z\u00C0-\u017F]+)*)['\"]?(?=[,\s]+(?:and\s+)?email|\s*$|\s*<)",
+        r"user\.name\s+['\"]?([A-Za-z\u00C0-\u017F\s\-']+)['\"]?",
+        r"\bfor\s+([A-Za-z\u00C0-\u017F]+(?:[\s\-'][A-Za-z\u00C0-\u017F]+)*)\b(?=[,\s]+(?:with|and|email)|\s*$)",
+        r"author\s+['\"]?([A-Za-z\u00C0-\u017F\s\-']+)['\"]?",
     ]
     for np in name_patterns:
         m = re.search(np, cleaned, re.IGNORECASE)
@@ -142,8 +142,15 @@ def deterministic_intent_resolution(prompt: str, context: Optional[dict[str, Any
         if not user_email and context.get("user_email"):
             user_email = context["user_email"]
 
-    # 3. Check for Status/Query intent
-    if "status" in lowered or "check" in lowered or "show" in lowered:
+    # Check if prompt expresses configuration intent (or includes user identity params)
+    has_config_intent = (
+        any(k in lowered for k in ["configure", "config", "setup", "identity", "author", "set"])
+        or (user_name is not None and user_email is not None)
+    )
+    has_status_intent = any(k in lowered for k in ["status", "check", "show", "query", "list"])
+
+    # 3. Check for pure Status/Query intent when not configuring
+    if has_status_intent and not has_config_intent:
         token = mint_execution_token("QUERY_STATUS", [["status", "--short"], ["config", "--list"]])
         return BrainDecision(
             action_type="QUERY_STATUS",
@@ -158,7 +165,7 @@ def deterministic_intent_resolution(prompt: str, context: Optional[dict[str, Any
         )
 
     # 4. Git Configuration intent
-    if any(k in lowered for k in ["git", "configure", "config", "setup", "identity", "author"]):
+    if has_config_intent or any(k in lowered for k in ["git", "configure", "config", "setup", "identity", "author"]):
         missing = []
         if not user_name:
             missing.append("user_name")
@@ -270,23 +277,47 @@ async def plan_intent_with_gemini(prompt: str, context: Optional[dict[str, Any]]
                 raw_json = data["candidates"][0]["content"]["parts"][0]["text"]
                 parsed = json.loads(raw_json)
 
-                # Post-process and issue execution token if action is executable
+                # Enforce privilege boundary: construct CLI argument arrays deterministically in Python
                 action_type = parsed.get("action_type", "NEEDS_INFO")
-                git_args = parsed.get("git_arguments", [])
+                user_name = parsed.get("user_name")
+                user_email = parsed.get("user_email")
+                missing_parameters = parsed.get("missing_parameters", [])
+                follow_up_prompt = parsed.get("follow_up_prompt")
+                git_args: list[list[str]] = []
                 token = None
-                if action_type in ("EXECUTE_GIT_CONFIG", "QUERY_STATUS") and git_args:
+
+                if action_type == "EXECUTE_GIT_CONFIG":
+                    if user_name and user_email:
+                        # Deterministic argument construction; guarantees zero LLM argument injection
+                        git_args = [
+                            ["config", "--global", "user.name", str(user_name).strip()],
+                            ["config", "--global", "user.email", str(user_email).strip()],
+                            ["config", "--global", "core.autocrlf", "true"],
+                        ]
+                        token = mint_execution_token(action_type, git_args)
+                    else:
+                        action_type = "NEEDS_INFO"
+                        missing_parameters = []
+                        if not user_name:
+                            missing_parameters.append("user_name")
+                        if not user_email:
+                            missing_parameters.append("user_email")
+                        if not follow_up_prompt:
+                            follow_up_prompt = "What name and email would you like to configure for Git?"
+                elif action_type == "QUERY_STATUS":
+                    git_args = [["status", "--short"], ["config", "--list"]]
                     token = mint_execution_token(action_type, git_args)
 
                 return BrainDecision(
                     action_type=action_type,
-                    user_name=parsed.get("user_name"),
-                    user_email=parsed.get("user_email"),
-                    missing_parameters=parsed.get("missing_parameters", []),
-                    follow_up_prompt=parsed.get("follow_up_prompt"),
+                    user_name=user_name,
+                    user_email=user_email,
+                    missing_parameters=missing_parameters,
+                    follow_up_prompt=follow_up_prompt,
                     git_arguments=git_args,
                     execution_token=token,
                     explanation=parsed.get("explanation", "Resolved via Gemini structured output."),
-                    safety_verdict="PASSED: Gemini structured schema validated.",
+                    safety_verdict="PASSED: Deterministic argument arrays constructed and validated.",
                 )
             else:
                 logger.warning("Gemini API error (%s); falling back to deterministic engine", resp.status_code)

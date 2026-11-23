@@ -61,3 +61,16 @@ def test_sample_screen_inspection_generation():
     assert result.injection_detected is True
     assert result.pii_redacted_count >= 2
     assert result.tier3_guided_only is True
+
+
+def test_process_screen_handles_inverted_coordinates():
+    """Handles inverted or zero-sized OCR bounding boxes without throwing PIL exceptions."""
+    img = Image.new("RGB", (400, 200), color=(20, 20, 20))
+    ocr_items = [
+        ([150, 40, 50, 10], "User: alice@example.com", 0.99),  # Inverted box
+        ([10, 10, 10, 10], "Zero size", 0.95),  # Zero size
+    ]
+
+    result = process_screen_image_in_memory(img, ocr_items)
+    assert result.pii_redacted_count == 1
+    assert result.redacted_image_base64.startswith("data:image/png;base64,")

@@ -317,7 +317,7 @@ export const InstallStreamSection: React.FC<InstallStreamSectionProps> = ({
             </div>
           ) : (
             events.map((ev, idx) => (
-              <div key={idx} className="flex items-start gap-2">
+              <div key={ev.event_id || idx} className="flex items-start gap-2">
                 <span className="text-[10px] text-slate-600 shrink-0">#{ev.event_id}</span>
                 <span
                   className={`text-[10px] uppercase font-bold shrink-0 ${

@@ -61,6 +61,20 @@ export const RecoveryBanner: React.FC<RecoveryBannerProps> = ({ onRollbackTrigge
     return null;
   }
 
+  if (recoveries.length === 0 && actionMessage) {
+    return (
+      <div className="mb-6 rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-3.5 backdrop-blur shadow-lg shadow-emerald-950/20 flex items-center justify-between text-xs text-emerald-300">
+        <span className="font-mono">✓ {actionMessage}</span>
+        <button
+          onClick={() => setActionMessage(null)}
+          className="text-slate-400 hover:text-slate-200 text-xs px-2 py-0.5 rounded border border-slate-700"
+        >
+          Dismiss
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="mb-6 rounded-xl border border-amber-500/40 bg-amber-950/30 p-4 backdrop-blur shadow-lg shadow-amber-950/20">
       <div className="flex items-start justify-between gap-4">

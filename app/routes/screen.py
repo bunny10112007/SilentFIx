@@ -6,13 +6,15 @@ prompt injection detection, and tier3_guided_only enforcement.
 
 from __future__ import annotations
 
+import base64
 import logging
+import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, UploadFile
-from PIL import Image
+from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.cloud.aws_sync import archive_redacted_inspection_to_s3
 from app.security.screen_guard import (
     ScreenInspectionResult,
     detect_injections,
@@ -48,6 +50,20 @@ async def inspect_screen(
         with_injection=simulate_injection,
         with_pii=simulate_pii,
     )
+
+    # Offload PII-redacted inspection archive to AWS S3 without blocking async loop
+    try:
+        if result.redacted_image_base64 and result.redacted_image_base64.startswith("data:image/png;base64,"):
+            b64_part = result.redacted_image_base64.split(",", 1)[1]
+            raw_png = base64.b64decode(b64_part)
+            inspection_id = f"insp_{uuid.uuid4().hex[:8]}"
+            await archive_redacted_inspection_to_s3(
+                inspection_id=inspection_id,
+                redacted_image_bytes=raw_png,
+            )
+    except Exception as exc:
+        logger.warning("Failed to archive inspection image to S3: %s", exc)
+
     return result
 
 

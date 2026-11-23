@@ -181,6 +181,15 @@ def validate_and_evict_token(
             detail=f"403 Forbidden: Token bound to package '{t_pkg_id}', but requested '{package_id}'. Token invalidated.",
         )
 
+    # Check source binding if a URL source is provided
+    if source and (source.lower().startswith("https://") or source.lower().startswith("http://")):
+        if t_source.lower() != source.strip().lower():
+            _verified_probes.pop(token, None)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"403 Forbidden: Token bound to source '{t_source}', but requested '{source}'. Token invalidated.",
+            )
+
     # Single-use eviction: token is consumed immediately
     _verified_probes.pop(token, None)
     logger.info("Successfully validated and evicted single-use probe_token for %s", package_id)
@@ -200,14 +209,24 @@ async def verify_package_manifest(
     resolved_name = known_data["name"] if known_data else package_id
     resolved_version = version or (known_data["version"] if known_data else "latest")
 
-    # If hash not supplied, check catalog or compute/require
-    if not sha256_hash:
-        if known_data and "sha256" in known_data:
-            resolved_hash = known_data["sha256"]
+    # Validate SHA-256 hash against catalog or enforce valid input
+    if known_data and "sha256" in known_data:
+        catalog_hash = known_data["sha256"].lower()
+        if sha256_hash:
+            validated_hash = validate_sha256_string(sha256_hash)
+            if validated_hash != catalog_hash:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Pre-Flight Trust Gate violation: SHA-256 hash '{sha256_hash}' does not match authentic catalog hash '{catalog_hash}'. Package may be corrupted or tampered.",
+                )
+            resolved_hash = validated_hash
         else:
-            # Generate deterministic synthetic verification hash based on package details
-            hasher = hashlib.sha256(f"{package_id}-{enforced_source}-{resolved_version}".encode())
-            resolved_hash = hasher.hexdigest()
+            resolved_hash = catalog_hash
+    elif not sha256_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Pre-Flight Trust Gate violation: Package '{package_id}' is not in verified catalog. Explicit SHA-256 manifest hash is required.",
+        )
     else:
         resolved_hash = validate_sha256_string(sha256_hash)
 

@@ -9,9 +9,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from fastapi import HTTPException, status
+
+from app.cloud.aws_sync import replicate_audit_record_to_dynamodb
+from app.actions.winget_streamer import execute_winget_uninstall
 from app.state.db import (
     atomic_acquire_rollback_lock,
     get_connection,
+    get_session,
     log_install_event,
     mark_rollback_completed,
     update_session_status,
@@ -105,18 +110,31 @@ async def get_pending_recoveries() -> list[dict[str, Any]]:
 
 async def resolve_recovery_session(session_id: str, action: str = "rollback") -> dict[str, Any]:
     """Resolve an interrupted session by either performing an atomic rollback
-
     or dismissing the recovery flag.
     """
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+
     if action == "rollback":
         # Acquire atomic CAS lock and rollback safely
         lock_res = await atomic_acquire_rollback_lock(
             session_id=session_id,
             reason="Automated crash recovery rollback",
         )
+        pkg_id = session.get("package_id", "unknown")
+        await execute_winget_uninstall(pkg_id)
         await mark_rollback_completed(
             session_id=session_id,
-            details="Interrupted installation rolled back cleanly by crash recovery manager.",
+            details=f"Interrupted installation of {pkg_id} rolled back cleanly by crash recovery manager.",
+        )
+        await replicate_audit_record_to_dynamodb(
+            entity_type="RECOVERY_ROLLBACK",
+            entity_id=session_id,
+            payload={"session_id": session_id, "status": "ROLLED_BACK", "action": "rollback"},
         )
         return {
             "session_id": session_id,
@@ -124,7 +142,7 @@ async def resolve_recovery_session(session_id: str, action: str = "rollback") ->
             "status": "ROLLED_BACK",
             "message": "Session successfully rolled back and restored.",
         }
-    else:
+    elif action == "dismiss":
         now = utc_now_iso()
         async with get_connection() as conn:
             await conn.execute(
@@ -136,9 +154,26 @@ async def resolve_recovery_session(session_id: str, action: str = "rollback") ->
                 (now, session_id),
             )
             await conn.commit()
+
+        await log_install_event(
+            session_id=session_id,
+            phase="DISMISSED",
+            progress=0,
+            message="Session dismissed from recovery queue.",
+        )
+        await replicate_audit_record_to_dynamodb(
+            entity_type="RECOVERY_DISMISS",
+            entity_id=session_id,
+            payload={"session_id": session_id, "status": "DISMISSED", "action": "dismiss"},
+        )
         return {
             "session_id": session_id,
             "action": "dismiss",
             "status": "DISMISSED",
             "message": "Session dismissed from recovery queue.",
         }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid recovery action '{action}'. Supported actions are 'rollback' or 'dismiss'.",
+        )

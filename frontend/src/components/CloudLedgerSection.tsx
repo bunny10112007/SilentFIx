@@ -12,21 +12,42 @@ interface SessionRecord {
   updated_at: string;
 }
 
+interface CloudAuditRecord {
+  id: number;
+  entity_type: string;
+  entity_id: string;
+  sync_status: string;
+  dynamo_synced_at?: string | null;
+  s3_synced_at?: string | null;
+  payload: string;
+  created_at: string;
+}
+
 interface CloudLedgerSectionProps {
   refreshTrigger?: number;
 }
 
 export const CloudLedgerSection: React.FC<CloudLedgerSectionProps> = ({ refreshTrigger }) => {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [auditRecords, setAuditRecords] = useState<CloudAuditRecord[]>([]);
+  const [activeTab, setActiveTab] = useState<'sessions' | 'cloudAudit'>('sessions');
   const [loading, setLoading] = useState<boolean>(false);
 
   const fetchLedger = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/install/sessions?limit=15');
-      if (res.ok) {
-        const data = await res.json();
+      const [resSess, resAudit] = await Promise.all([
+        fetch('/api/install/sessions?limit=15'),
+        fetch('/api/install/cloud-audit?limit=15'),
+      ]);
+
+      if (resSess.ok) {
+        const data = await resSess.json();
         setSessions(data.sessions || []);
+      }
+      if (resAudit.ok) {
+        const data = await resAudit.json();
+        setAuditRecords(data.records || []);
       }
     } catch (err) {
       console.warn('Could not load ledger sessions:', err);
@@ -107,56 +128,123 @@ export const CloudLedgerSection: React.FC<CloudLedgerSectionProps> = ({ refreshT
         </div>
       </div>
 
-      {/* Sessions Table */}
-      <div className="mt-5 overflow-x-auto rounded-xl border border-slate-800 bg-black/40">
-        <table className="w-full text-left text-xs text-slate-300">
-          <thead className="bg-slate-950/80 text-[11px] font-semibold uppercase text-slate-400 border-b border-slate-800">
-            <tr>
-              <th className="px-4 py-2.5">Session ID</th>
-              <th className="px-4 py-2.5">Package</th>
-              <th className="px-4 py-2.5">Source</th>
-              <th className="px-4 py-2.5">Status</th>
-              <th className="px-4 py-2.5">Timestamp</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-            {sessions.length === 0 ? (
+      {/* Tabs */}
+      <div className="mt-5 flex items-center justify-between border-b border-slate-800 pb-2">
+        <div className="flex gap-2">
+          <button
+            onClick={() => setActiveTab('sessions')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+              activeTab === 'sessions'
+                ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            SQLite WAL Sessions ({sessions.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('cloudAudit')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+              activeTab === 'cloudAudit'
+                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            AWS Cloud Audit Records ({auditRecords.length})
+          </button>
+        </div>
+      </div>
+
+      {/* Table Content */}
+      <div className="mt-3 overflow-x-auto rounded-xl border border-slate-800 bg-black/40">
+        {activeTab === 'sessions' ? (
+          <table className="w-full text-left text-xs text-slate-300">
+            <thead className="bg-slate-950/80 text-[11px] font-semibold uppercase text-slate-400 border-b border-slate-800">
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-slate-600 italic">
-                  No installation sessions recorded yet. Mint a token and start an install to populate ledger.
-                </td>
+                <th className="px-4 py-2.5">Session ID</th>
+                <th className="px-4 py-2.5">Package</th>
+                <th className="px-4 py-2.5">Source</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Timestamp</th>
               </tr>
-            ) : (
-              sessions.map((s) => (
-                <tr key={s.session_id} className="hover:bg-slate-900/40 transition">
-                  <td className="px-4 py-2 font-bold text-slate-200">{s.session_id}</td>
-                  <td className="px-4 py-2 text-teal-300">{s.package_id}</td>
-                  <td className="px-4 py-2 text-slate-400">{s.source}</td>
-                  <td className="px-4 py-2">
-                    <span
-                      className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold ${
-                        s.status === 'COMPLETED'
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          : s.status === 'WAITING_UAC'
-                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                          : s.status === 'ROLLED_BACK'
-                          ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
-                          : s.status === 'RECOVERY_REQUIRED'
-                          ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse'
-                          : 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
-                      }`}
-                    >
-                      {s.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-slate-500 text-[10px]">
-                    {new Date(s.created_at).toLocaleTimeString()}
+            </thead>
+            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+              {sessions.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-slate-600 italic">
+                    No installation sessions recorded yet. Mint a token and start an install to populate ledger.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                sessions.map((s) => (
+                  <tr key={s.session_id} className="hover:bg-slate-900/40 transition">
+                    <td className="px-4 py-2 font-bold text-slate-200">{s.session_id}</td>
+                    <td className="px-4 py-2 text-teal-300">{s.package_id}</td>
+                    <td className="px-4 py-2 text-slate-400">{s.source}</td>
+                    <td className="px-4 py-2">
+                      <span
+                        className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold ${
+                          s.status === 'COMPLETED'
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : s.status === 'WAITING_UAC'
+                            ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                            : s.status === 'ROLLED_BACK'
+                            ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+                            : s.status === 'RECOVERY_REQUIRED'
+                            ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse'
+                            : 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
+                        }`}
+                      >
+                        {s.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-slate-500 text-[10px]">
+                      {new Date(s.created_at).toLocaleTimeString()}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        ) : (
+          <table className="w-full text-left text-xs text-slate-300">
+            <thead className="bg-slate-950/80 text-[11px] font-semibold uppercase text-slate-400 border-b border-slate-800">
+              <tr>
+                <th className="px-4 py-2.5">Entity Type</th>
+                <th className="px-4 py-2.5">Entity ID</th>
+                <th className="px-4 py-2.5">Sync Status</th>
+                <th className="px-4 py-2.5">DynamoDB Synced</th>
+                <th className="px-4 py-2.5">S3 Synced</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+              {auditRecords.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-slate-600 italic">
+                    No cloud audit replication records yet.
+                  </td>
+                </tr>
+              ) : (
+                auditRecords.map((r) => (
+                  <tr key={r.id} className="hover:bg-slate-900/40 transition">
+                    <td className="px-4 py-2 text-sky-300">{r.entity_type}</td>
+                    <td className="px-4 py-2 font-bold text-slate-200">{r.entity_id}</td>
+                    <td className="px-4 py-2">
+                      <span className="inline-block rounded bg-sky-950/60 border border-sky-800/40 px-2 py-0.5 text-[10px] text-sky-300">
+                        {r.sync_status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-slate-400 text-[10px]">
+                      {r.dynamo_synced_at ? new Date(r.dynamo_synced_at).toLocaleTimeString() : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-slate-400 text-[10px]">
+                      {r.s3_synced_at ? new Date(r.s3_synced_at).toLocaleTimeString() : '—'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

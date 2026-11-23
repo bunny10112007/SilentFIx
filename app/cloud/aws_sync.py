@@ -27,11 +27,14 @@ DEFAULT_AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 
 def has_aws_credentials() -> bool:
-    """Check if AWS credentials are configured in the environment."""
-    return bool(
-        os.getenv("AWS_ACCESS_KEY_ID")
-        and os.getenv("AWS_SECRET_ACCESS_KEY")
-    )
+    """Check if AWS credentials are configured in the environment or provider chain."""
+    if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
+        return True
+    try:
+        session = boto3.Session(region_name=os.getenv("AWS_REGION", DEFAULT_AWS_REGION))
+        return session.get_credentials() is not None
+    except Exception:
+        return False
 
 
 def _sync_record_to_dynamodb_sync(
@@ -41,12 +44,14 @@ def _sync_record_to_dynamodb_sync(
 ) -> bool:
     """Synchronous DynamoDB put_item call executed in worker thread (Chunk 1)."""
     try:
-        dynamodb = boto3.resource(
-            "dynamodb",
-            region_name=region,
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-        )
+        kwargs: dict[str, Any] = {"region_name": region}
+        if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
+            kwargs["aws_access_key_id"] = os.getenv("AWS_ACCESS_KEY_ID")
+            kwargs["aws_secret_access_key"] = os.getenv("AWS_SECRET_ACCESS_KEY")
+            if os.getenv("AWS_SESSION_TOKEN"):
+                kwargs["aws_session_token"] = os.getenv("AWS_SESSION_TOKEN")
+
+        dynamodb = boto3.resource("dynamodb", **kwargs)
         table = dynamodb.Table(table_name)
         table.put_item(Item=record)
         logger.info("DynamoDB sync succeeded for record %s", record.get("entity_id"))
@@ -70,12 +75,14 @@ def _upload_redacted_image_to_s3_sync(
     Only images that have passed RapidOCR Gaussian PII blurring are uploaded.
     """
     try:
-        s3_client = boto3.client(
-            "s3",
-            region_name=region,
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-        )
+        kwargs: dict[str, Any] = {"region_name": region}
+        if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
+            kwargs["aws_access_key_id"] = os.getenv("AWS_ACCESS_KEY_ID")
+            kwargs["aws_secret_access_key"] = os.getenv("AWS_SECRET_ACCESS_KEY")
+            if os.getenv("AWS_SESSION_TOKEN"):
+                kwargs["aws_session_token"] = os.getenv("AWS_SESSION_TOKEN")
+
+        s3_client = boto3.client("s3", **kwargs)
         s3_client.put_object(
             Bucket=bucket_name,
             Key=s3_key,

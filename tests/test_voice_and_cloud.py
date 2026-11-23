@@ -20,6 +20,7 @@ async def setup_test_db(tmp_path, monkeypatch):
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
     await init_db()
     yield test_db
 
@@ -67,3 +68,26 @@ async def test_privacy_preserving_s3_archive_telemetry():
     )
     assert res["sync_status"] == "LOCAL_ONLY"
     assert "redacted_inspections" in res["s3_key"]
+
+
+@pytest.mark.asyncio
+async def test_cloud_audit_endpoint_and_session_token(monkeypatch):
+    """Verifies /api/install/cloud-audit endpoint and AWS_SESSION_TOKEN environment handling."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test_key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test_secret")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "test_token")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Trigger an audit record creation
+        await replicate_audit_record_to_dynamodb(
+            entity_type="TEST_SESSION",
+            entity_id="test_id_token",
+            payload={"test": "data"},
+        )
+
+        resp = await client.get("/api/install/cloud-audit")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "records" in data
+        assert any(r["entity_id"] == "test_id_token" for r in data["records"])

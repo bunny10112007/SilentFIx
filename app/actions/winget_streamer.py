@@ -167,6 +167,8 @@ async def stream_winget_install(
         "--exact",
         "--source",
         source,
+        "--scope",
+        scope,
         "--accept-package-agreements",
         "--accept-source-agreements",
         "--disable-interactivity",
@@ -209,7 +211,14 @@ async def stream_winget_install(
                 )
             except asyncio.TimeoutError:
                 # Watchdog timer expired: output paused during execution
-                if not uac_signaled and process.returncode is None:
+                # Only signal WAITING_UAC if in installation/elevation context, not during download network pauses
+                is_elevation_context = (
+                    phase in ("INSTALLING", "VERIFYING_HASH")
+                    or current_progress >= 90
+                    or "elevation" in buffer.lower()
+                    or "installing" in buffer.lower()
+                )
+                if not uac_signaled and process.returncode is None and is_elevation_context:
                     uac_signaled = True
                     event_counter += 1
                     uac_event = InstallProgressEvent(
@@ -244,11 +253,13 @@ async def stream_winget_install(
             phase = "DOWNLOADING"
             if "Installing" in chunk_text or "installing" in chunk_text:
                 phase = "INSTALLING"
-                if uac_signaled:
-                    await update_session_status(session_id, "EXECUTING")
-                    uac_signaled = False
             elif "Verifying" in chunk_text or "hash" in chunk_text.lower():
                 phase = "VERIFYING_HASH"
+
+            # Once process resumes producing chunks, UAC elevation prompt has passed
+            if uac_signaled:
+                await update_session_status(session_id, "EXECUTING")
+                uac_signaled = False
 
             event_counter += 1
             event = InstallProgressEvent(
@@ -309,3 +320,42 @@ async def stream_winget_install(
         await log_install_event(session_id, err_event.phase, err_event.progress, err_event.message)
         await update_session_status(session_id, "FAILED")
         yield err_event
+
+
+async def execute_winget_uninstall(package_id: str) -> tuple[bool, str]:
+    """Execute deterministic non-shell uninstallation for rollback.
+
+    Uses asyncio.create_subprocess_exec with shell=False.
+    """
+    winget_bin = shutil.which("winget") or shutil.which("winget.exe")
+    enable_mock = os.getenv("ENABLE_MOCK_WINGET", "auto").lower()
+
+    if enable_mock == "true" or not winget_bin:
+        logger.info("Executing safe uninstallation emulation for %s", package_id)
+        await asyncio.sleep(0.5)
+        return True, f"Deterministic uninstall simulated cleanly for {package_id}."
+
+    args = [
+        "uninstall",
+        "--id",
+        package_id,
+        "--exact",
+        "--disable-interactivity",
+        "--accept-source-agreements",
+    ]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            winget_bin,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        stdout_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=30.0)
+        output_str = stdout_bytes.decode("utf-8", errors="replace")
+        return process.returncode == 0, output_str
+    except Exception as exc:
+        logger.warning("Subprocess uninstall failed or timed out: %s", exc)
+        return False, str(exc)
+

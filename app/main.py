@@ -12,7 +12,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -101,9 +101,19 @@ if dist_dir.is_dir():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        file_path = dist_dir / full_path
-        if file_path.is_file():
-            return FileResponse(file_path)
+        # Prevent swallowing API 404s into SPA index.html
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail=f"API endpoint '/{full_path}' not found")
+
+        resolved_dist = dist_dir.resolve()
+        target_path = (dist_dir / full_path).resolve()
+        try:
+            # Strictly prevent directory traversal attacks outside frontend/dist
+            if target_path.is_file() and target_path.is_relative_to(resolved_dist):
+                return FileResponse(target_path)
+        except (ValueError, RuntimeError):
+            pass
+
         return FileResponse(dist_dir / "index.html")
 
 
