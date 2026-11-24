@@ -70,6 +70,12 @@ class CliDiagnosis(BaseModel):
     suggested_commands: list[str] = Field(default_factory=list)
 
 
+NON_COMMAND_WORDS = {
+    "error", "failed", "cannot", "fatal", "warning", "invalid", "unable", "exception",
+    "traceback",
+}
+
+
 def extract_missing_command(error_text: str) -> str | None:
     """Extract missing command name from common shell error messages."""
     patterns = [
@@ -87,7 +93,7 @@ def extract_missing_command(error_text: str) -> str | None:
             return cmd.removesuffix(".exe") if cmd.lower().endswith(".exe") else cmd
 
     tokens = error_text.strip().split()
-    if tokens and re.match(r"^[a-zA-Z0-9_\-]{2,30}$", tokens[0]):
+    if tokens and tokens[0].lower() not in NON_COMMAND_WORDS and re.match(r"^[a-zA-Z0-9_\-]{2,30}$", tokens[0]):
         return tokens[0]
 
     return None
@@ -125,6 +131,11 @@ def find_executable_on_disk(command: str) -> Path | None:
     return None
 
 
+def _search_disk_for_command(command: str) -> Path | str | None:
+    """Entry point for disk searching, allowing targeted testing hooks."""
+    return find_executable_on_disk(command)
+
+
 def diagnose_terminal_error(error_text: str) -> CliDiagnosis:
     """Diagnose a terminal command error through the 4-stage system probe."""
     cmd = extract_missing_command(error_text) or "unknown"
@@ -138,18 +149,26 @@ def diagnose_terminal_error(error_text: str) -> CliDiagnosis:
         )
 
     # Stage 2: Common Binary Trees Search
-    exe_path = find_executable_on_disk(cmd)
-    if exe_path:
+    raw_exe = _search_disk_for_command(cmd)
+    if raw_exe:
+        exe_path = Path(raw_exe)
         target_dir = str(exe_path.parent.resolve())
+        # Safe PowerShell User-scope environment update (avoids setx 1024-char PATH truncation)
+        suggested_commands = (
+            [
+                '$u = [Environment]::GetEnvironmentVariable("Path", "User"); '
+                f'[Environment]::SetEnvironmentVariable("Path", "$u;{target_dir}", "User")'
+            ]
+            if sys.platform == "win32"
+            else [f'export PATH="$PATH:{target_dir}"']
+        )
         return CliDiagnosis(
             missing_command=cmd,
             status="FOUND_ON_DISK_NEEDS_PATH",
             found_executable_path=str(exe_path),
             directory_to_add=target_dir,
             summary=f"Found '{cmd}' at '{exe_path}' (missing from PATH).",
-            suggested_commands=[f'setx PATH "%PATH%;{target_dir}"']
-            if sys.platform == "win32"
-            else [f'export PATH="$PATH:{target_dir}"'],
+            suggested_commands=suggested_commands,
         )
 
     # Stage 3: Known Winget Catalog Map

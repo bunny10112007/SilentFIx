@@ -105,6 +105,13 @@ def apply_compatibility_shim(params: CompatShimParams) -> CompatShimResult:
 
     normalized_exe = os.path.normpath(str(target))
     layer_str = build_layer_string(params)
+    if layer_str == "~":
+        return CompatShimResult(
+            success=False,
+            executable_path=str(target),
+            applied_layer="",
+            detail="Select at least one compatibility flag or OS mode before applying shim.",
+        )
 
     try:
         previous = _read_compat_layer(normalized_exe)

@@ -23,7 +23,8 @@ logger = logging.getLogger("silentfix.aws_sync")
 
 DEFAULT_DYNAMO_TABLE = os.getenv("DYNAMODB_TABLE_NAME", "silentfix_audit_ledger")
 DEFAULT_S3_BUCKET = os.getenv("S3_BUCKET_NAME", "silentfix-redacted-inspections")
-DEFAULT_AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+# Standardized single AWS fallback region across sync and sandbox modules
+DEFAULT_AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 
 
 def has_aws_credentials() -> bool:
