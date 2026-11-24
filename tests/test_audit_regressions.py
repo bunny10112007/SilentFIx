@@ -131,3 +131,68 @@ def test_aws_modules_share_consistent_default_region(monkeypatch):
     sync_region = getattr(aws_sync, "DEFAULT_AWS_REGION", getattr(aws_sync, "AWS_REGION", None))
     sandbox_region = getattr(aws_sandbox, "DEFAULT_AWS_REGION", "ap-south-1")
     assert sync_region == sandbox_region
+
+
+# Test 9: AWS CodeBuild status polling endpoint (Fix #4)
+async def test_sandbox_build_status_polling(client, monkeypatch):
+    from app.cloud.aws_sandbox import PretestReportDict, _simulated_runs
+    from app.routes import sandbox as sandbox_route
+
+    run_id = "test_run_cb_123"
+    _simulated_runs[run_id] = PretestReportDict({
+        "run_id": run_id,
+        "aws_build_id": "project:build-123",
+        "verdict": "RUNNING",
+    })
+
+    class FakeCodeBuildClient:
+        def batch_get_builds(self, ids):
+            return {"builds": [{"buildStatus": "SUCCEEDED"}]}
+
+    monkeypatch.setattr(sandbox_route.boto3, "client", lambda service, **kwargs: FakeCodeBuildClient())
+    res = await client.get(f"/api/sandbox/status/{run_id}")
+    assert res.status_code == 200
+    assert res.json()["verdict"] == "PASSED"
+    _simulated_runs.pop(run_id, None)
+
+
+# Test 10: Package source verification in token eviction (Fix #6)
+def test_validate_and_evict_token_enforces_source():
+    from app.probes import software_probe
+    token = software_probe.mint_probe_token(
+        package_id="Git.Git",
+        source="https://github.com/git-for-windows/git/releases",
+        sha256_hash="4b92cbf54a61b8fbc04de90ef9929845d58f33989c565d7764d36ef9662b249b",
+    )
+    with pytest.raises(software_probe.HTTPException) as exc_info:
+        software_probe.validate_and_evict_token(
+            token=token,
+            package_id="Git.Git",
+            source="https://malicious-source.com/git.exe",
+        )
+    assert exc_info.value.status_code == 403
+
+
+# Test 11: Session task lock for concurrent SSE streams (Fix #11)
+async def test_session_task_lock_deduplicates_runs():
+    import asyncio
+    from app.routes.install_stream import get_or_attach_install_task, _active_jobs
+
+    exec_count = 0
+
+    async def sample_job():
+        nonlocal exec_count
+        exec_count += 1
+        await asyncio.sleep(0.05)
+
+    sess_id = "test_concurrent_sess"
+    coro1 = sample_job()
+    coro2 = sample_job()
+    t1 = await get_or_attach_install_task(sess_id, coro1)
+    t2 = await get_or_attach_install_task(sess_id, coro2)
+    assert t1 is t2
+    await t1
+    coro2.close()
+    assert exec_count == 1
+    _active_jobs.pop(sess_id, None)
+
