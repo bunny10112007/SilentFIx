@@ -5,16 +5,18 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "SilentlyContinue"
 
-Write-Host "Stopping any running SilentFix backend instances..."
+Write-Host "Stopping any running SilentFix backend and frontend instances..."
 
-# Find processes listening on port 8000
-$connections = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue
-if ($connections) {
-    $pids = $connections | Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($p in $pids) {
-        if ($p -and $p -ne 0) {
-            Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            Write-Host "Terminated process on port 8000 (PID: $p)"
+# Find processes listening on port 8000 (backend) or 5173 (Vite dev)
+foreach ($port in @(8000, 5173)) {
+    $connections = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
+    if ($connections) {
+        $pids = $connections | Select-Object -ExpandProperty OwningProcess -Unique
+        foreach ($p in $pids) {
+            if ($p -and $p -ne 0) {
+                Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+                Write-Host "Terminated process on port $port (PID: $p)"
+            }
         }
     }
 }

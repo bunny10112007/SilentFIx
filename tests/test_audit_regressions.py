@@ -104,10 +104,18 @@ async def test_voice_route_closes_client_on_exception(client, monkeypatch):
 
 
 # Test 6: Ignore common error words
-@pytest.mark.parametrize("generic_error", ["Cannot open file test.txt", "Failed to connect to database"])
+@pytest.mark.parametrize(
+    "generic_error",
+    [
+        "Cannot open file test.txt",
+        "Failed to connect to database",
+        "Fatal error encountered in system",
+        "Warning: deprecated configuration",
+    ],
+)
 def test_non_command_words_are_not_extracted_as_executables(generic_error: str):
     extracted = cli_healer.extract_missing_command(generic_error)
-    assert extracted not in {"cannot", "failed"}
+    assert extracted not in {"cannot", "failed", "fatal", "warning"}
 
 
 # Test 7: Reject degenerate "~" shim
