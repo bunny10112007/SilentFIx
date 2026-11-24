@@ -70,25 +70,72 @@ class CliDiagnosis(BaseModel):
     suggested_commands: list[str] = Field(default_factory=list)
 
 
+NON_COMMAND_WORDS: set[str] = {
+    "the", "term", "command", "error", "at", "line", "char", "warning", "info",
+    "bash", "zsh", "sh", "cmd", "powershell", "pwsh",
+    "der", "die", "das", "befehl", "benennung", "wurde", "nicht", "erkannt", "fehler",
+    "le", "la", "les", "terme", "erreur", "est", "pas", "reconnu", "introuvable",
+    "el", "los", "las", "termino", "comando", "objeto",
+}
+
+
 def extract_missing_command(error_text: str) -> str | None:
-    """Extract missing command name from common shell error messages."""
+    """Extract missing command name from English or localized shell error messages."""
+    text = error_text.strip()
+
+    # 1. Standard explicit shell error regexes (English, bash, zsh, CMD)
     patterns = [
         r"'([^']+)' is not recognized as an internal or external command",
         r'"([^"]+)" is not recognized as an internal or external command',
-        r"command not found:\s*([^\s]+)",
         r"bash:\s*([^\s:]+):\s*command not found",
         r"zsh:\s*command not found:\s*([^\s]+)",
+        r"command not found:\s*([^\s]+)",
         r"The term '([^']+)' is not recognized as the name of a cmdlet",
     ]
     for pattern in patterns:
-        m = re.search(pattern, error_text, re.IGNORECASE)
+        m = re.search(pattern, text, re.IGNORECASE)
         if m:
             cmd = m.group(1).strip()
-            return cmd.removesuffix(".exe") if cmd.lower().endswith(".exe") else cmd
+            return cmd.removesuffix(".exe").lower() if cmd.lower().endswith(".exe") else cmd.lower()
 
-    tokens = error_text.strip().split()
-    if tokens and re.match(r"^[a-zA-Z0-9_\-]{2,30}$", tokens[0]):
-        return tokens[0]
+    # 2. PowerShell exception patterns containing command name
+    ex_m = re.search(r"\(([a-zA-Z0-9_\-]{2,30}):String\)\s*\[\],\s*(?:CommandNotFoundException|ObjectNotFound)", text)
+    if ex_m:
+        cand = ex_m.group(1).strip().lower()
+        if cand not in NON_COMMAND_WORDS:
+            return cand
+
+    # 3. Quoted patterns including guillemets «...» and curly quotes “...” / ‘...’
+    quote_patterns = [
+        r"'([^']+)'",
+        r'"([^"]+)"',
+        r"«([^»]+)»",
+        r"“([^”]+)”",
+        r"‘([^’]+)’",
+    ]
+    for pattern in quote_patterns:
+        matches = re.findall(pattern, text)
+        for m in matches:
+            cand = m.strip().removesuffix(".exe").lower()
+            if 2 <= len(cand) <= 30 and re.match(r"^[a-zA-Z0-9_\-]+$", cand):
+                if cand in KNOWN_CLI_WINGET_MAP:
+                    return cand
+                if cand not in NON_COMMAND_WORDS:
+                    return cand
+
+    # 4. Locale-independent PowerShell colon-prefix pattern: "git : ..." or "docker : ObjectNotFound"
+    colon_m = re.match(r"^([a-zA-Z0-9_\-]{2,30})\s*:", text)
+    if colon_m:
+        cand = colon_m.group(1).strip().lower()
+        if cand not in NON_COMMAND_WORDS:
+            return cand
+
+    # 5. First token fallback if valid identifier
+    tokens = text.split()
+    if tokens:
+        first_tok = tokens[0].rstrip(":").lower()
+        if re.match(r"^[a-zA-Z0-9_\-]{2,30}$", first_tok) and first_tok not in NON_COMMAND_WORDS:
+            return first_tok
 
     return None
 

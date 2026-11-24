@@ -43,6 +43,17 @@ class CompatShimResult(BaseModel):
     applied_layer: str
     previous_layer: str | None = None
     detail: str
+    reg_file_content: str | None = None
+
+
+def generate_reg_file_snippet(exe_path: str, layer_str: str) -> str:
+    """Generate a downloadable Windows .reg registry snippet for manual import."""
+    escaped_exe = exe_path.replace("\\", "\\\\")
+    return (
+        "Windows Registry Editor Version 5.00\r\n\r\n"
+        "[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers]\r\n"
+        f'"{escaped_exe}"="{layer_str}"\r\n'
+    )
 
 
 def build_layer_string(params: CompatShimParams) -> str:
@@ -115,13 +126,16 @@ def apply_compatibility_shim(params: CompatShimParams) -> CompatShimResult:
             applied_layer=layer_str,
             previous_layer=previous,
             detail=f"Applied compatibility shim '{layer_str}' to {target.name}.",
+            reg_file_content=generate_reg_file_snippet(normalized_exe, layer_str),
         )
     except Exception as exc:
+        reg_snippet = generate_reg_file_snippet(normalized_exe, layer_str)
         return CompatShimResult(
             success=False,
             executable_path=normalized_exe,
             applied_layer="",
             detail=f"Registry operation failed: {str(exc)}",
+            reg_file_content=reg_snippet,
         )
 
 

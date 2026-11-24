@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,6 +98,39 @@ async def init_db() -> None:
                 s3_synced_at TEXT,
                 payload TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+            """
+        )
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ephemeral_tokens (
+                token TEXT PRIMARY KEY,
+                token_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                expires_at REAL NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ephemeral_tokens_type_exp
+            ON ephemeral_tokens(token_type, expires_at);
+            """
+        )
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS manifest_cache (
+                package_id TEXT PRIMARY KEY,
+                installer_url TEXT NOT NULL,
+                installer_sha256 TEXT NOT NULL,
+                version TEXT,
+                publisher TEXT,
+                fetched_at REAL NOT NULL,
+                expires_at REAL NOT NULL
             );
             """
         )
@@ -363,3 +398,250 @@ async def mark_rollback_completed(session_id: str, details: Optional[str] = None
         progress=100,
         message=details or "Rollback completed successfully.",
     )
+
+
+async def store_ephemeral_token(
+    token: str,
+    token_type: str,
+    payload: dict[str, Any],
+    expires_at: float,
+) -> None:
+    """Store an ephemeral single-use token in SQLite WAL database."""
+    now = utc_now_iso()
+    payload_str = json.dumps(payload)
+    async with get_connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO ephemeral_tokens (token, token_type, payload_json, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(token) DO UPDATE SET
+                token_type=excluded.token_type,
+                payload_json=excluded.payload_json,
+                expires_at=excluded.expires_at,
+                created_at=excluded.created_at
+            """,
+            (token, token_type, payload_str, expires_at, now),
+        )
+        await conn.commit()
+
+
+async def consume_token(token: str, expected_type: str) -> dict[str, Any] | None:
+    """Atomically validate and evict a single-use token.
+
+    Uses atomic DELETE ... RETURNING (or transactional fallback) to prevent
+    concurrency race conditions and token replay across restarts and workers.
+    """
+    now = time.time()
+    async with get_connection() as conn:
+        try:
+            cursor = await conn.execute(
+                """
+                DELETE FROM ephemeral_tokens
+                WHERE token = ? AND token_type = ? AND expires_at > ?
+                RETURNING payload_json
+                """,
+                (token, expected_type, now),
+            )
+            row = await cursor.fetchone()
+            await conn.commit()
+            if row and row[0]:
+                return json.loads(row[0])
+            return None
+        except Exception:
+            # Transactional fallback if RETURNING is not supported
+            await conn.execute("BEGIN IMMEDIATE")
+            cursor = await conn.execute(
+                """
+                SELECT payload_json FROM ephemeral_tokens
+                WHERE token = ? AND token_type = ? AND expires_at > ?
+                """,
+                (token, expected_type, now),
+            )
+            row = await cursor.fetchone()
+            if row:
+                await conn.execute(
+                    "DELETE FROM ephemeral_tokens WHERE token = ?",
+                    (token,),
+                )
+                await conn.commit()
+                return json.loads(row[0])
+            await conn.execute("COMMIT")
+            return None
+
+
+async def prune_expired_tokens() -> int:
+    """Prune expired ephemeral tokens from the database."""
+    now = time.time()
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM ephemeral_tokens WHERE expires_at <= ?",
+            (now,),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
+async def get_cached_manifest(package_id: str) -> dict[str, Any] | None:
+    """Retrieve non-expired package manifest from manifest_cache table."""
+    now = time.time()
+    async with get_connection() as conn:
+        try:
+            cursor = await conn.execute(
+                """
+                SELECT package_id, installer_url, installer_sha256, version, publisher, expires_at
+                FROM manifest_cache
+                WHERE package_id = ? AND expires_at > ?
+                """,
+                (package_id, now),
+            )
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+        except Exception:
+            return None
+
+
+async def set_cached_manifest(
+    package_id: str,
+    installer_url: str,
+    installer_sha256: str,
+    version: Optional[str] = None,
+    publisher: Optional[str] = None,
+    ttl_seconds: float = 21600.0,  # 6 hours TTL
+) -> None:
+    """Cache live package manifest with 6-hour TTL."""
+    now = time.time()
+    expires_at = now + ttl_seconds
+    async with get_connection() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS manifest_cache (
+                package_id TEXT PRIMARY KEY,
+                installer_url TEXT NOT NULL,
+                installer_sha256 TEXT NOT NULL,
+                version TEXT,
+                publisher TEXT,
+                fetched_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            );
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO manifest_cache (package_id, installer_url, installer_sha256, version, publisher, fetched_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(package_id) DO UPDATE SET
+                installer_url=excluded.installer_url,
+                installer_sha256=excluded.installer_sha256,
+                version=excluded.version,
+                publisher=excluded.publisher,
+                fetched_at=excluded.fetched_at,
+                expires_at=excluded.expires_at
+            """,
+            (package_id, installer_url, installer_sha256, version, publisher, now, expires_at),
+        )
+        await conn.commit()
+
+
+def get_sync_connection() -> sqlite3.Connection:
+    """Synchronous SQLite connection for sync probe callers & tests."""
+    db_path = get_db_path()
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ephemeral_tokens (
+            token TEXT PRIMARY KEY,
+            token_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ephemeral_tokens_type_exp
+        ON ephemeral_tokens(token_type, expires_at);
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS manifest_cache (
+            package_id TEXT PRIMARY KEY,
+            installer_url TEXT NOT NULL,
+            installer_sha256 TEXT NOT NULL,
+            version TEXT,
+            publisher TEXT,
+            fetched_at REAL NOT NULL,
+            expires_at REAL NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def store_ephemeral_token_sync(
+    token: str,
+    token_type: str,
+    payload: dict[str, Any],
+    expires_at: float,
+) -> None:
+    """Store an ephemeral token synchronously."""
+    now = utc_now_iso()
+    payload_str = json.dumps(payload)
+    with get_sync_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO ephemeral_tokens (token, token_type, payload_json, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(token) DO UPDATE SET
+                token_type=excluded.token_type,
+                payload_json=excluded.payload_json,
+                expires_at=excluded.expires_at,
+                created_at=excluded.created_at
+            """,
+            (token, token_type, payload_str, expires_at, now),
+        )
+        conn.commit()
+
+
+def consume_token_sync(token: str, expected_type: str) -> dict[str, Any] | None:
+    """Synchronously validate and evict single-use token atomically."""
+    now = time.time()
+    with get_sync_connection() as conn:
+        try:
+            cursor = conn.execute(
+                """
+                DELETE FROM ephemeral_tokens
+                WHERE token = ? AND token_type = ? AND expires_at > ?
+                RETURNING payload_json
+                """,
+                (token, expected_type, now),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            if row and row[0]:
+                return json.loads(row[0])
+            return None
+        except Exception:
+            cursor = conn.execute(
+                """
+                SELECT payload_json FROM ephemeral_tokens
+                WHERE token = ? AND token_type = ? AND expires_at > ?
+                """,
+                (token, expected_type, now),
+            )
+            row = cursor.fetchone()
+            if row:
+                conn.execute("DELETE FROM ephemeral_tokens WHERE token = ?", (token,))
+                conn.commit()
+                return json.loads(row[0])
+            return None

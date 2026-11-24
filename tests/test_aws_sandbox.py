@@ -27,9 +27,9 @@ async def test_cloud_pretest_offline_simulation(monkeypatch):
 
     assert report.package_id == "Git.Git"
     assert report.backend == "offline_simulated"
-    assert report.verdict == "PASSED"
+    assert report.verdict == "UNVERIFIED_SIMULATED"
     assert report.run_id.startswith("sbx_")
-    assert "Offline pretest simulation passed" in report.summary
+    assert "Unverified simulation" in report.summary
 
 
 def test_cloud_pretest_request_validation():
@@ -52,7 +52,7 @@ async def test_sandbox_api_endpoints(client):
     assert res.status_code == 200
     report = res.json()
     assert report["package_id"] == "OpenJS.NodeJS"
-    assert report["verdict"] in ["PASSED", "QUEUED"]
+    assert report["verdict"] in ["UNVERIFIED_SIMULATED", "PASSED", "QUEUED"]
 
     list_res = await client.get("/api/sandbox/runs")
     assert list_res.status_code == 200

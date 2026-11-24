@@ -18,7 +18,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger("silentfix.aws_sandbox")
 
-SandboxVerdict = Literal["QUEUED", "RUNNING", "PASSED", "NEEDS_COMPAT_SHIM", "FAILED"]
+SandboxVerdict = Literal[
+    "QUEUED",
+    "RUNNING",
+    "PASSED",
+    "UNVERIFIED_SIMULATED",
+    "NEEDS_COMPAT_SHIM",
+    "FAILED",
+]
 
 
 class CloudPretestRequest(BaseModel):
@@ -53,9 +60,9 @@ def _start_codebuild_sync(req: CloudPretestRequest) -> CloudPretestReport:
             run_id=run_id,
             package_id=req.package_id,
             backend="offline_simulated",
-            verdict="PASSED",
+            verdict="UNVERIFIED_SIMULATED",
             started_at=now,
-            summary=f"Offline pretest simulation passed for '{req.package_id}'.",
+            summary=f"Unverified simulation: AWS CodeBuild is unconfigured. Simulated pretest completed for '{req.package_id}' (No isolated container executed).",
         )
         _simulated_runs[run_id] = report
         logger.info("Executed offline simulated pre-test for %s (%s)", req.package_id, run_id)

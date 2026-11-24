@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,12 +15,13 @@ from app.actions.compat_fixer import (
     apply_compatibility_shim,
     restore_compatibility_shim,
 )
+from app.state.db import consume_token_sync, store_ephemeral_token_sync
 
 logger = logging.getLogger("silentfix.compat_route")
 
 router = APIRouter(prefix="/api/compat", tags=["compat"])
 
-_compat_undo_store: dict[str, tuple[str, str | None]] = {}
+UNDO_TOKEN_TTL_SECONDS = 3600.0  # 1 hour TTL
 
 
 class ApplyCompatResponse(BaseModel):
@@ -40,16 +42,26 @@ async def compat_apply(params: CompatShimParams) -> ApplyCompatResponse:
     undo_token = None
     if res.success:
         undo_token = secrets.token_urlsafe(16)
-        _compat_undo_store[undo_token] = (res.executable_path, res.previous_layer)
+        payload = {
+            "executable_path": res.executable_path,
+            "previous_layer": res.previous_layer,
+        }
+        store_ephemeral_token_sync(
+            token=undo_token,
+            token_type="compat_undo",
+            payload=payload,
+            expires_at=time.time() + UNDO_TOKEN_TTL_SECONDS,
+        )
     return ApplyCompatResponse(result=res, undo_token=undo_token)
 
 
 @router.post("/undo")
 async def compat_undo(req: UndoCompatRequest) -> dict:
     """Restore previous compatibility configuration using single-use undo token."""
-    snapshot = _compat_undo_store.pop(req.undo_token, None)
-    if snapshot is None:
+    payload = consume_token_sync(req.undo_token, "compat_undo")
+    if payload is None:
         raise HTTPException(status_code=404, detail="Invalid or expired undo token.")
-    exe_path, prev_layer = snapshot
+    exe_path = payload.get("executable_path", "")
+    prev_layer = payload.get("previous_layer")
     await asyncio.to_thread(restore_compatibility_shim, exe_path, prev_layer)
     return {"restored": True, "message": f"Restored previous settings for {exe_path}."}

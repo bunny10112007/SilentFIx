@@ -13,11 +13,14 @@ import os
 import re
 import secrets
 import time
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 import httpx
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
+
+from app.probes.cli_healer import KNOWN_CLI_WINGET_MAP
+from app.state.db import consume_token_sync, store_ephemeral_token_sync
 
 logger = logging.getLogger("silentfix.brain")
 
@@ -54,35 +57,174 @@ class BrainDecision(BaseModel):
     safety_verdict: str = Field(..., description="Deterministic privilege boundary check verdict.")
 
 
-def mint_execution_token(action_type: str, git_arguments: list[list[str]]) -> str:
-    """Issue a single-use execution token for verified deterministic commands."""
-    now = time.time()
-    # Purge expired tokens
-    expired = [k for k, v in _brain_execution_tokens.items() if v[2] <= now]
-    for k in expired:
-        _brain_execution_tokens.pop(k, None)
+# Discriminated Union Action Plans covering all deterministic executors
+class GitConfigPlan(BaseModel):
+    intent: Literal["git_config"] = "git_config"
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    git_arguments: list[list[str]] = Field(default_factory=list)
+    explanation: str = "Configure Git user name and email deterministically."
 
+
+class WingetInstallPlan(BaseModel):
+    intent: Literal["winget_install"] = "winget_install"
+    package_id: str
+    source: str = "winget"
+    scope: str = "user"
+    explanation: str = "Install verified application package via winget."
+
+
+class CliHealPlan(BaseModel):
+    intent: Literal["cli_heal"] = "cli_heal"
+    command: str
+    explanation: str = "Diagnose and heal missing terminal command or PATH."
+
+
+class CompatShimPlan(BaseModel):
+    intent: Literal["compat_shim"] = "compat_shim"
+    executable_path: str
+    os_mode: Optional[str] = "WIN7RTM"
+    display_flags: list[str] = Field(default_factory=lambda: ["HIGHDPIAWARE"])
+    run_as_admin: bool = False
+    explanation: str = "Apply Windows 11 AppCompat compatibility shim."
+
+
+class NeedsInfoPlan(BaseModel):
+    intent: Literal["needs_info"] = "needs_info"
+    missing_parameters: list[str] = Field(default_factory=list)
+    follow_up_prompt: str
+    explanation: str = "Additional parameters required from user."
+
+
+class RejectPlan(BaseModel):
+    intent: Literal["reject"] = "reject"
+    reason: str
+    explanation: str = "Request rejected due to security policy or unsupported syntax."
+
+
+ActionPlan = Annotated[
+    Union[GitConfigPlan, WingetInstallPlan, CliHealPlan, CompatShimPlan, NeedsInfoPlan, RejectPlan],
+    Field(discriminator="intent"),
+]
+
+
+def parse_offline_action_plan(prompt: str) -> ActionPlan:
+    """Lightweight 2-stage offline intent parser and entity extractor.
+
+    Stage 1: Keyword-based intent classification.
+    Stage 2: Targeted entity extractors for arguments, emails, and package IDs.
+    """
+    cleaned = prompt.strip()
+    lowered = cleaned.lower()
+
+    # Stage 0: Security filter
+    insecure = ["rm -rf", "format c:", "powershell", "cmd.exe", "del /s", "curl -s", "bash -c", "|", "&", ";", "`", "$("]
+    for trig in insecure:
+        if trig in lowered:
+            return RejectPlan(
+                reason=f"Security violation: Trigger '{trig}' rejected.",
+                explanation="Shell injections and destructive commands are blocked.",
+            )
+
+    # Stage 1 & 2: Install intent
+    if "install" in lowered or "get" in lowered or "download" in lowered:
+        for cmd_name, pkg_id in KNOWN_CLI_WINGET_MAP.items():
+            if re.search(r"\b" + re.escape(cmd_name) + r"\b", lowered):
+                return WingetInstallPlan(package_id=pkg_id, explanation=f"Resolved install intent for '{cmd_name}' -> {pkg_id}")
+        # Direct package ID match (e.g. Git.Git)
+        pkg_m = re.search(r"\b([A-Za-z0-9]+\.[A-Za-z0-9._\-]+)\b", cleaned)
+        if pkg_m:
+            return WingetInstallPlan(package_id=pkg_m.group(1), explanation=f"Found package ID '{pkg_m.group(1)}'")
+
+    # Stage 1 & 2: Compat shim intent
+    if any(k in lowered for k in ["blurry", "dpi", "compat", "scaling", "display"]) or ".exe" in lowered:
+        exe_m = re.search(r"([a-zA-Z]:\\[^\s]+\.exe|[A-Za-z0-9_\-]+\.exe)", cleaned)
+        exe_path = exe_m.group(1) if exe_m else "C:\\App\\game.exe"
+        flags = ["HIGHDPIAWARE"] if "blurry" in lowered or "dpi" in lowered else ["GDIDPISCALING"]
+        return CompatShimPlan(
+            executable_path=exe_path,
+            display_flags=flags,
+            explanation=f"Configured high-DPI compatibility shim for '{exe_path}'.",
+        )
+
+    # Stage 1 & 2: CLI Healer intent
+    if any(k in lowered for k in ["path", "not recognized", "command not found", "fix my path", "heal"]):
+        for cmd_name in KNOWN_CLI_WINGET_MAP.keys():
+            if re.search(r"\b" + re.escape(cmd_name) + r"\b", lowered):
+                return CliHealPlan(command=cmd_name, explanation=f"Diagnosing PATH for missing '{cmd_name}'.")
+        tokens = cleaned.split()
+        cand = tokens[-1].strip() if tokens else "git"
+        return CliHealPlan(command=cand, explanation=f"Diagnosing command '{cand}'.")
+
+    # Stage 1 & 2: Git Config intent
+    if "git" in lowered or "email" in lowered or "author" in lowered or "commit" in lowered:
+        email_m = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", cleaned)
+        name_m = re.search(r"(?:name(?:\s+is|\s+to|\s*[:=])?)\s+['\"]?([A-Za-z\s\-]+)['\"]?", cleaned, re.IGNORECASE)
+
+        user_email = email_m.group(0).strip() if email_m else None
+        user_name = None
+        if name_m:
+            raw_n = name_m.group(1).split(" and ")[0].split(" email")[0].strip()
+            if raw_n and raw_n.lower() not in ("to", "is", "my", "git"):
+                user_name = raw_n
+
+        args = []
+        if user_name:
+            args.append(["config", "--global", "user.name", user_name])
+        if user_email:
+            args.append(["config", "--global", "user.email", user_email])
+
+        return GitConfigPlan(
+            user_name=user_name,
+            user_email=user_email,
+            git_arguments=args,
+            explanation=f"Git configuration resolved for author '{user_name}' and email '{user_email}'.",
+        )
+
+    # Fallback to NeedsInfoPlan
+    return NeedsInfoPlan(
+        missing_parameters=["task"],
+        follow_up_prompt="What system repair, installation, or configuration task would you like to perform?",
+        explanation="Intent not fully resolved from prompt.",
+    )
+
+
+def mint_execution_token(action_type: str, git_arguments: list[list[str]]) -> str:
+    """Issue a single-use execution token for verified deterministic commands.
+    Persisted to SQLite WAL ephemeral_tokens table.
+    """
+    now = time.time()
     token = f"exec_{secrets.token_urlsafe(16)}"
-    _brain_execution_tokens[token] = (action_type, git_arguments, now + EXECUTION_TOKEN_TTL_SECONDS)
+    payload = {
+        "action_type": action_type,
+        "git_arguments": git_arguments,
+    }
+    store_ephemeral_token_sync(
+        token=token,
+        token_type="brain_execution",
+        payload=payload,
+        expires_at=now + EXECUTION_TOKEN_TTL_SECONDS,
+    )
     return token
 
 
 def validate_and_evict_execution_token(token: str) -> tuple[str, list[list[str]]]:
-    """Validate and consume single-use execution token."""
-    now = time.time()
-    if not token or token not in _brain_execution_tokens:
+    """Validate and consume single-use execution token atomically from SQLite."""
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: Invalid or expired execution token. Safe non-shell execution requires pre-authorized token.",
         )
 
-    action_type, git_args, expires_at = _brain_execution_tokens.pop(token)
-    if now > expires_at:
+    payload = consume_token_sync(token, "brain_execution")
+    if not payload:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: Execution token has expired. Please plan intent again.",
+            detail="Forbidden: Invalid or expired execution token. Safe non-shell execution requires pre-authorized token.",
         )
 
+    action_type = payload.get("action_type", "")
+    git_args = payload.get("git_arguments", [])
     return action_type, git_args
 
 

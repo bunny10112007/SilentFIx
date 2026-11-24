@@ -11,6 +11,7 @@ import base64
 import io
 import logging
 import re
+import unicodedata
 from typing import Any, Optional
 
 from PIL import Image, ImageDraw, ImageFilter
@@ -64,11 +65,66 @@ class ScreenInspectionResult(BaseModel):
     redacted_image_base64: str
 
 
+LEETSPEAK_TABLE = str.maketrans({
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "@": "a",
+    "$": "s",
+    "!": "i",
+    "+": "t",
+    "7": "t",
+})
+
+
+def sanitize_text_for_scan(text: str) -> str:
+    """Normalize text before regex scanning:
+
+    Applies Unicode NFKC normalization, strips invisible zero-width characters
+    (\\u200b-\\u200f, \\ufeff), collapses repeated whitespace, and normalizes
+    common leetspeak substitutions.
+    """
+    if not text:
+        return ""
+    # 1. Unicode NFKC normalization
+    norm = unicodedata.normalize("NFKC", text)
+    # 2. Strip invisible zero-width characters
+    norm = re.sub(r"[\u200b-\u200f\ufeff\u202a-\u202e]", "", norm)
+    # 3. Collapse whitespace
+    norm = re.sub(r"\s+", " ", norm).strip()
+    # 4. Leetspeak substitutions
+    norm = norm.translate(LEETSPEAK_TABLE)
+    return norm
+
+
+def wrap_untrusted_screen_text(text: str) -> str:
+    """Enforce structural defense-in-depth by wrapping sanitized OCR text
+
+    in explicit untrusted delimiters so downstream language models do not
+    execute instructions contained within the user's screen.
+    """
+    return f"<untrusted_screen_text>\n{text.strip()}\n</untrusted_screen_text>"
+
+
+def preprocess_frame_for_ocr(image: Image.Image) -> Image.Image:
+    """Preprocess frame before OCR:
+
+    Upscales low-resolution frames 2x in volatile memory with bicubic resizing
+    and enhances contrast for accurate text detection.
+    """
+    if image.width < 1280:
+        new_size = (image.width * 2, image.height * 2)
+        return image.resize(new_size, Image.Resampling.BICUBIC)
+    return image
+
+
 def detect_injections(text: str) -> list[str]:
     """Scan text against prompt injection signatures (Chunk 1)."""
+    cleaned = sanitize_text_for_scan(text)
     flagged = []
     for pattern in INJECTION_SIGNATURES:
-        match = pattern.search(text)
+        match = pattern.search(cleaned)
         if match:
             flagged.append(match.group(0))
     return flagged
@@ -173,17 +229,24 @@ def process_screen_image_in_memory(
 
         elif pii_types:
             # Chunk 2: Detects sensitive data types and applies a 16px Gaussian blur
-            # directly to image memory. Unredacted screen data is never written to disk.
+            # directly to image memory. Expands boundary by 10px so characters don't bleed.
             pii_redacted_count += 1
             for p in pii_types:
                 detected_pii_types_set.add(p)
 
-            crop_w = max(1, x1 - x0)
-            crop_h = max(1, y1 - y0)
+            # Expand blur box by 10px on each side
+            pad = 10
+            blur_x0 = max(0, x0 - pad)
+            blur_y0 = max(0, y0 - pad)
+            blur_x1 = min(image_copy.width, x1 + pad)
+            blur_y1 = min(image_copy.height, y1 + pad)
+
+            crop_w = max(1, blur_x1 - blur_x0)
+            crop_h = max(1, blur_y1 - blur_y0)
             if crop_w > 0 and crop_h > 0:
-                region = image_copy.crop((x0, y0, x1, y1))
+                region = image_copy.crop((blur_x0, blur_y0, blur_x1, blur_y1))
                 blurred_region = region.filter(ImageFilter.GaussianBlur(16))
-                image_copy.paste(blurred_region, (x0, y0))
+                image_copy.paste(blurred_region, (blur_x0, blur_y0))
 
             overlays.append(
                 ScreenZoneOverlay(
@@ -208,7 +271,8 @@ def process_screen_image_in_memory(
             annotated_lines.append((cleaned_line, False, []))
 
     # Chunk 3: Context Sanitization & Tier-3 Guided Mode Enforcement
-    sanitized_text, blocked_commands = sanitize_text_context(annotated_lines)
+    raw_sanitized_text, blocked_commands = sanitize_text_context(annotated_lines)
+    sanitized_text = wrap_untrusted_screen_text(raw_sanitized_text) if raw_sanitized_text else ""
     injection_detected = injections_count > 0
     tier3_guided_only = injection_detected  # Restrict to tier3_guided_only if injection found
 

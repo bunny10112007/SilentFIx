@@ -17,6 +17,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.actions.winget_rollback import capture_user_env_snapshot
 from app.actions.winget_streamer import execute_winget_uninstall, stream_winget_install
 from app.cloud.aws_sync import get_cloud_audit_history, replicate_audit_record_to_dynamodb
 from app.probes.software_probe import (
@@ -129,6 +130,7 @@ async def start_installation(req: StartInstallRequest) -> dict[str, Any]:
         "version": req.version,
         "probe_token_used": req.probe_token[:8] + "...",
         "rollback_command": ["winget", "uninstall", "--id", req.package_id, "--exact"],
+        "env_snapshot": capture_user_env_snapshot(),
     }
 
     session = await create_session(

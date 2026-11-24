@@ -5,7 +5,7 @@ interface CloudPretestReport {
   run_id: string;
   package_id: string;
   backend: 'aws_codebuild' | 'offline_simulated';
-  verdict: 'QUEUED' | 'RUNNING' | 'PASSED' | 'NEEDS_COMPAT_SHIM' | 'FAILED';
+  verdict: 'QUEUED' | 'RUNNING' | 'PASSED' | 'UNVERIFIED_SIMULATED' | 'NEEDS_COMPAT_SHIM' | 'FAILED';
   started_at: string;
   aws_build_id?: string | null;
   summary: string;
@@ -168,12 +168,14 @@ export const AwsSandboxSection: React.FC<AwsSandboxSectionProps> = ({ onVoiceAle
       {/* Latest Report Card */}
       {currentReport && (
         <div className="mt-5 rounded-xl border border-cyan-500/30 bg-black/50 p-4 space-y-2">
-          <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
             <div className="flex items-center gap-2">
               <span
                 className={`rounded-full px-2.5 py-0.5 text-xs font-mono font-bold ${
                   currentReport.verdict === 'PASSED'
                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : currentReport.verdict === 'UNVERIFIED_SIMULATED'
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                     : currentReport.verdict === 'QUEUED'
                     ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
                     : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
@@ -185,9 +187,18 @@ export const AwsSandboxSection: React.FC<AwsSandboxSectionProps> = ({ onVoiceAle
                 {currentReport.package_id}
               </span>
             </div>
-            <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/40 border border-cyan-500/30 px-2 py-0.5 rounded">
-              Backend: {currentReport.backend}
-            </span>
+            <div className="flex items-center gap-2">
+              {currentReport.backend === 'offline_simulated' ? (
+                <span className="flex items-center gap-1 text-[10px] font-mono font-semibold text-amber-400 bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 rounded">
+                  <AlertTriangle className="h-3 w-3" />
+                  Simulated — No Container Executed
+                </span>
+              ) : (
+                <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/40 border border-cyan-500/30 px-2 py-0.5 rounded">
+                  Backend: {currentReport.backend}
+                </span>
+              )}
+            </div>
           </div>
 
           <p className="text-xs text-slate-300">{currentReport.summary}</p>
@@ -222,7 +233,13 @@ export const AwsSandboxSection: React.FC<AwsSandboxSectionProps> = ({ onVoiceAle
                   <span className="text-[10px] text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded">
                     {r.backend}
                   </span>
-                  <span className="text-[10px] text-emerald-300 font-bold">
+                  <span className={`text-[10px] font-bold ${
+                    r.verdict === 'PASSED'
+                      ? 'text-emerald-300'
+                      : r.verdict === 'UNVERIFIED_SIMULATED'
+                      ? 'text-amber-400'
+                      : 'text-cyan-300'
+                  }`}>
                     {r.verdict}
                   </span>
                 </div>

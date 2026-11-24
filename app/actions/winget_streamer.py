@@ -13,8 +13,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional, Protocol, runtime_checkable
 
 from app.state.db import log_install_event, update_session_status
 
@@ -22,6 +23,56 @@ logger = logging.getLogger("silentfix.winget")
 
 UAC_WATCHDOG_TIMEOUT_SECONDS = 4.0
 CHUNK_SIZE_BYTES = 256
+MAX_MSI_MUTEX_RETRIES = 3
+
+
+@runtime_checkable
+class PackageManagerRunner(Protocol):
+    """Protocol for abstract package manager execution with shell=False guarantees."""
+
+    async def stream_install(
+        self,
+        session_id: str,
+        package_id: str,
+        source: str = "winget",
+        scope: str = "user",
+    ) -> AsyncGenerator[InstallProgressEvent, None]:
+        ...
+
+    async def uninstall(self, package_id: str) -> bool:
+        ...
+
+
+def is_uac_consent_active() -> bool:
+    """Check if consent.exe (Windows UAC elevation host) is currently active."""
+    if sys.platform != "win32":
+        return False
+    try:
+        out = subprocess.check_output(
+            ["tasklist.exe", "/FI", "IMAGENAME eq consent.exe"],
+            shell=False,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return "consent.exe" in out.lower()
+    except Exception:
+        return False
+
+
+def is_msi_mutex_locked() -> bool:
+    """Probe Global\\_MSIExecute mutex to detect concurrent Windows Installer operations."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        handle = ctypes.windll.kernel32.OpenMutexW(SYNCHRONIZE, False, "Global\\_MSIExecute")
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    except Exception:
+        return False
 
 
 class InstallProgressEvent:
@@ -197,43 +248,64 @@ async def stream_winget_install(
     buffer = ""
     last_chunk_time = time.time()
     uac_signaled = False
+    phase = "INITIALIZING"
 
     try:
         while True:
             # Chunk 2 (Stream Parsing & UAC Watchdog): Reads stdout in small 256-byte
-            # chunks to parse real-time progress bars. If output pauses during installation,
-            # it raises a WAITING_UAC notification to alert the user.
+            # chunks to parse real-time progress bars. Phase-aware UAC verification
+            # inspects consent.exe and suppresses false alarms during network downloads.
             try:
-                # Read 256 bytes with watchdog timeout
                 chunk_bytes = await asyncio.wait_for(
                     process.stdout.read(CHUNK_SIZE_BYTES),
                     timeout=UAC_WATCHDOG_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                # Watchdog timer expired: output paused during execution
-                # Only signal WAITING_UAC if in installation/elevation context, not during download network pauses
-                is_elevation_context = (
-                    phase in ("INSTALLING", "VERIFYING_HASH")
-                    or current_progress >= 90
-                    or "elevation" in buffer.lower()
-                    or "installing" in buffer.lower()
-                )
-                if not uac_signaled and process.returncode is None and is_elevation_context:
-                    uac_signaled = True
-                    event_counter += 1
-                    uac_event = InstallProgressEvent(
-                        event_id=event_counter,
-                        session_id=session_id,
-                        phase="WAITING_UAC",
-                        progress=current_progress,
-                        message="WAITING_UAC: Waiting for Windows User Account Control (UAC) elevation approval.",
-                        raw_output="[Watchdog] Elevation prompt pending...",
-                    )
-                    await log_install_event(
-                        session_id, uac_event.phase, uac_event.progress, uac_event.message
-                    )
-                    await update_session_status(session_id, "WAITING_UAC")
-                    yield uac_event
+                now = time.time()
+                silence_duration = now - last_chunk_time
+
+                if phase == "DOWNLOADING":
+                    # Suppress UAC alerts during download; emit neutral heartbeat if silence > 15s
+                    if silence_duration >= 15.0:
+                        event_counter += 1
+                        yield InstallProgressEvent(
+                            event_id=event_counter,
+                            session_id=session_id,
+                            phase="DOWNLOAD_IN_PROGRESS",
+                            progress=current_progress,
+                            message="DOWNLOAD_IN_PROGRESS: Package download in progress over network...",
+                            raw_output="[Heartbeat] Downloading...",
+                        )
+                        last_chunk_time = now
+                elif phase in ("INSTALLING", "VERIFYING_HASH") or current_progress >= 90:
+                    consent_active = is_uac_consent_active()
+                    if consent_active and not uac_signaled and process.returncode is None:
+                        uac_signaled = True
+                        event_counter += 1
+                        uac_event = InstallProgressEvent(
+                            event_id=event_counter,
+                            session_id=session_id,
+                            phase="WAITING_UAC",
+                            progress=current_progress,
+                            message="WAITING_UAC: Waiting for Windows User Account Control (UAC) elevation approval.",
+                            raw_output="[Watchdog] Elevation prompt pending (consent.exe active)...",
+                        )
+                        await log_install_event(
+                            session_id, uac_event.phase, uac_event.progress, uac_event.message
+                        )
+                        await update_session_status(session_id, "WAITING_UAC")
+                        yield uac_event
+                    elif not consent_active and silence_duration >= 8.0:
+                        event_counter += 1
+                        yield InstallProgressEvent(
+                            event_id=event_counter,
+                            session_id=session_id,
+                            phase="INSTALLER_SLOW",
+                            progress=current_progress,
+                            message="INSTALLER_SLOW: Installer process is performing local system configurations.",
+                            raw_output="[Watchdog] Local configuration in progress...",
+                        )
+                        last_chunk_time = now
                 continue
 
             if not chunk_bytes:
@@ -290,6 +362,21 @@ async def stream_winget_install(
             )
             await update_session_status(session_id, "COMPLETED")
             yield completed_event
+        elif return_code == 1618:
+            event_counter += 1
+            mutex_event = InstallProgressEvent(
+                event_id=event_counter,
+                session_id=session_id,
+                phase="WAITING_OS_INSTALLER",
+                progress=current_progress,
+                message="WAITING_OS_INSTALLER: Another Windows installation or update is running (Error 1618).",
+                raw_output="Exit code: 1618 (ERROR_INSTALL_ALREADY_RUNNING)",
+            )
+            await log_install_event(
+                session_id, mutex_event.phase, mutex_event.progress, mutex_event.message
+            )
+            await update_session_status(session_id, "WAITING_OS_INSTALLER")
+            yield mutex_event
         else:
             event_counter += 1
             failed_event = InstallProgressEvent(
@@ -358,4 +445,22 @@ async def execute_winget_uninstall(package_id: str) -> tuple[bool, str]:
     except Exception as exc:
         logger.warning("Subprocess uninstall failed or timed out: %s", exc)
         return False, str(exc)
+
+
+class WingetRunner:
+    """Concrete runner for winget adhering to PackageManagerRunner protocol."""
+
+    async def stream_install(
+        self,
+        session_id: str,
+        package_id: str,
+        source: str = "winget",
+        scope: str = "user",
+    ) -> AsyncGenerator[InstallProgressEvent, None]:
+        async for evt in stream_winget_install(session_id, package_id, source, scope):
+            yield evt
+
+    async def uninstall(self, package_id: str) -> bool:
+        success, _ = await execute_winget_uninstall(package_id)
+        return success
 

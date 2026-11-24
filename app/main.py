@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.recovery import sweep_interrupted_sessions
 from app.routes import brain, compat, healer, install_stream, recovery, sandbox, screen, voice
-from app.state.db import init_db
+from app.state.db import init_db, prune_expired_tokens
 
 # Configure structured logging
 logging.basicConfig(
@@ -39,6 +41,7 @@ async def lifespan(app: FastAPI):
 
     # 1. Guarantee WAL database schema initialization
     await init_db()
+    await prune_expired_tokens()
 
     # 2. Perform automated crash recovery sweep
     reconciled = await sweep_interrupted_sessions()
@@ -80,6 +83,30 @@ app.include_router(brain.router)
 app.include_router(healer.router)
 app.include_router(compat.router)
 app.include_router(sandbox.router)
+
+
+@app.get("/api/system/capabilities")
+async def system_capabilities():
+    """Discover runtime platform capabilities to cleanly adapt frontend features."""
+    is_win = sys.platform == "win32"
+    winget_found = bool(shutil.which("winget") or shutil.which("winget.exe"))
+
+    registry_writable = False
+    if is_win:
+        try:
+            import winreg
+            subkey = r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_SET_VALUE):
+                registry_writable = True
+        except Exception:
+            registry_writable = False
+
+    return {
+        "platform": sys.platform,
+        "is_windows": is_win,
+        "winget_available": winget_found,
+        "registry_writable": registry_writable,
+    }
 
 
 @app.get("/api/health")
