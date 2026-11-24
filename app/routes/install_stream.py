@@ -41,8 +41,17 @@ from app.state.db import (
 logger = logging.getLogger("silentfix.install_route")
 
 # In-memory registry for single-instance installer execution & live SSE pub/sub
-_active_install_tasks: dict[str, asyncio.Task] = {}
+_active_jobs: dict[str, asyncio.Task] = {}
+_session_locks: dict[str, asyncio.Lock] = {}
+_active_install_tasks: dict[str, asyncio.Task] = _active_jobs
 _session_subscribers: dict[str, list[asyncio.Queue]] = {}
+
+
+async def get_or_attach_install_task(session_id: str, coroutine):
+    async with _session_locks.setdefault(session_id, asyncio.Lock()):
+        if session_id not in _active_jobs or _active_jobs[session_id].done():
+            _active_jobs[session_id] = asyncio.create_task(coroutine)
+        return _active_jobs[session_id]
 
 
 async def _run_install_job(session_id: str, package_id: str, source: str) -> None:
@@ -62,7 +71,7 @@ async def _run_install_job(session_id: str, package_id: str, source: str) -> Non
     except Exception as exc:
         logger.error("Error in background install job for %s: %s", session_id, exc)
     finally:
-        _active_install_tasks.pop(session_id, None)
+        _active_jobs.pop(session_id, None)
 
 
 router = APIRouter(prefix="/api/install", tags=["Install & Pre-Flight Trust Gate"])
@@ -214,13 +223,13 @@ async def stream_installation(
                 yield f"event: CLOSE\ndata: {json.dumps({'reason': 'Session already in terminal state'})}\n\n"
                 return
 
-            # 3. Ensure single background installation task is running
-            if session_id not in _active_install_tasks:
-                package_id = session["package_id"]
-                source = session["source"]
-                _active_install_tasks[session_id] = asyncio.create_task(
-                    _run_install_job(session_id=session_id, package_id=package_id, source=source)
-                )
+            # 3. Ensure single background installation task is running via per-session lock
+            package_id = session["package_id"]
+            source = session["source"]
+            await get_or_attach_install_task(
+                session_id,
+                _run_install_job(session_id=session_id, package_id=package_id, source=source),
+            )
 
             # 4. Stream real-time events from subscriber queue
             while True:

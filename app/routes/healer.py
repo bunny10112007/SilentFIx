@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
@@ -21,4 +22,5 @@ class DiagnoseRequest(BaseModel):
 @router.post("/diagnose", response_model=CliDiagnosis)
 async def healer_diagnose(req: DiagnoseRequest) -> CliDiagnosis:
     """Diagnose missing command from shell error output."""
-    return diagnose_terminal_error(req.error_text)
+    # Offload blocking multi-directory disk glob scan to worker thread pool
+    return await asyncio.to_thread(diagnose_terminal_error, req.error_text)

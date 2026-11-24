@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 import boto3
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +26,10 @@ SandboxVerdict = Literal[
     "NEEDS_COMPAT_SHIM",
     "FAILED",
 ]
+# Standardized single AWS fallback region across sync and sandbox modules
+DEFAULT_AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+
+SandboxVerdict = Literal["QUEUED", "RUNNING", "PASSED", "NEEDS_COMPAT_SHIM", "FAILED"]
 
 
 class CloudPretestRequest(BaseModel):
@@ -46,7 +50,22 @@ class CloudPretestReport(BaseModel):
     summary: str
 
 
-_simulated_runs: dict[str, CloudPretestReport] = {}
+class PretestReportDict(dict):
+    """Dictionary supporting both item and attribute access for CodeBuild tracking."""
+    def __getattr__(self, name: str):
+        try:
+            return self[name]
+        except KeyError:
+            return None
+
+    def __setattr__(self, name: str, value: Any):
+        self[name] = value
+
+    def model_dump(self) -> dict:
+        return dict(self)
+
+
+_simulated_runs: dict[str, Any] = {}
 
 
 def _start_codebuild_sync(req: CloudPretestRequest) -> CloudPretestReport:
@@ -64,13 +83,13 @@ def _start_codebuild_sync(req: CloudPretestRequest) -> CloudPretestReport:
             started_at=now,
             summary=f"Unverified simulation: AWS CodeBuild is unconfigured. Simulated pretest completed for '{req.package_id}' (No isolated container executed).",
         )
-        _simulated_runs[run_id] = report
+        _simulated_runs[run_id] = PretestReportDict(report.model_dump())
         logger.info("Executed offline simulated pre-test for %s (%s)", req.package_id, run_id)
         return report
 
     try:
         session = boto3.Session()
-        cb = session.client("codebuild", region_name=os.getenv("AWS_REGION", "ap-south-1"))
+        cb = session.client("codebuild", region_name=DEFAULT_AWS_REGION)
         resp = cb.start_build(
             projectName=project_name,
             environmentVariablesOverride=[
@@ -88,7 +107,7 @@ def _start_codebuild_sync(req: CloudPretestRequest) -> CloudPretestReport:
             aws_build_id=build_id,
             summary=f"Dispatched '{req.package_id}' to AWS CodeBuild sandbox ({build_id}).",
         )
-        _simulated_runs[run_id] = report
+        _simulated_runs[run_id] = PretestReportDict(report.model_dump())
         logger.info("Dispatched to AWS CodeBuild: %s", build_id)
         return report
     except Exception as exc:
@@ -101,7 +120,7 @@ def _start_codebuild_sync(req: CloudPretestRequest) -> CloudPretestReport:
             started_at=now,
             summary=f"CodeBuild fallback: offline pretest simulation passed for '{req.package_id}'.",
         )
-        _simulated_runs[run_id] = report
+        _simulated_runs[run_id] = PretestReportDict(report.model_dump())
         return report
 
 

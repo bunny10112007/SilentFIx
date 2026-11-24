@@ -213,13 +213,13 @@ def validate_and_evict_token(
             detail=f"403 Forbidden: Token bound to package '{t_pkg_id}', but requested '{package_id}'. Token invalidated.",
         )
 
-    # Check source binding if a URL source is provided
-    if source and (source.lower().startswith("https://") or source.lower().startswith("http://")):
-        if t_source.lower() != source.strip().lower():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"403 Forbidden: Token bound to source '{t_source}', but requested '{source}'. Token invalidated.",
-            )
+    # Check source binding
+    if source is not None and t_source.lower() != source.strip().lower():
+        _verified_probes.pop(token, None)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"403 Forbidden: Token bound to source '{t_source}', but requested '{source}'. Token invalidated.",
+        )
 
     _verified_probes.pop(token, None)
     logger.info("Successfully validated and evicted single-use probe_token for %s", package_id)

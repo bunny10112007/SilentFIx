@@ -63,19 +63,14 @@ async def stream_speech(req: SpeakRequest) -> Response:
         },
     }
 
+    client = httpx.AsyncClient(timeout=10.0)
     try:
-        client = httpx.AsyncClient(timeout=10.0)
         req_stream = client.build_request("POST", url, headers=headers, json=body)
         resp = await client.send(req_stream, stream=True)
 
         if resp.status_code != 200:
-            error_text = await resp.aread()
+            await resp.aclose()
             await client.aclose()
-            logger.warning(
-                "ElevenLabs API returned %s: %s; falling back to 204",
-                resp.status_code,
-                error_text.decode("utf-8", errors="ignore"),
-            )
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         async def audio_stream():
@@ -95,6 +90,7 @@ async def stream_speech(req: SpeakRequest) -> Response:
             },
         )
     except Exception as exc:
+        await client.aclose()
         logger.warning("Failed to reach ElevenLabs TTS: %s; falling back to 204", exc)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
