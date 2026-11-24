@@ -36,14 +36,40 @@ async def list_pretest_runs():
 async def sandbox_build_status(run_id: str) -> dict:
     """Poll status of an active AWS CodeBuild run."""
     run = _simulated_runs.get(run_id)
-    if not run or "aws_build_id" not in run:
+    aws_build_id = None
+    if run and run.get("aws_build_id"):
+        aws_build_id = run.get("aws_build_id")
+    elif ":" in run_id:
+        aws_build_id = run_id
+
+    if not run and not aws_build_id:
         raise HTTPException(status_code=404, detail="Build run not found.")
-    if not run.get("aws_build_id"):
+
+    if not aws_build_id:
         return {"run_id": run_id, "verdict": run["verdict"]}
+
     cb = boto3.client("codebuild", region_name=DEFAULT_AWS_REGION)
-    res = cb.batch_get_builds(ids=[run["aws_build_id"]])
+    res = cb.batch_get_builds(ids=[aws_build_id])
     builds = res.get("builds", [])
     if builds:
         st = builds[0]["buildStatus"]
-        run["verdict"] = "RUNNING" if st == "IN_PROGRESS" else ("PASSED" if st == "SUCCEEDED" else "FAILED")
-    return {"run_id": run_id, "verdict": run["verdict"]}
+        if st == "IN_PROGRESS":
+            verdict = "RUNNING"
+            preset = None
+        elif st == "SUCCEEDED":
+            verdict = "PASSED"
+            preset = None
+        else:
+            verdict = "NEEDS_COMPAT_SHIM"
+            preset = "win7_blurry"
+
+        if run:
+            run["verdict"] = verdict
+            if preset:
+                run["recommended_compat_preset"] = preset
+        ret = {"run_id": run_id, "verdict": verdict}
+        if preset:
+            ret["recommended_compat_preset"] = preset
+        return ret
+
+    return {"run_id": run_id, "verdict": run["verdict"] if run else "RUNNING"}

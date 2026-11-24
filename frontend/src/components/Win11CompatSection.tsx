@@ -263,7 +263,7 @@ export const Win11CompatSection: React.FC<Win11CompatSectionProps> = ({ onVoiceA
 
           <button
             onClick={handleApplyShim}
-            disabled={loading || !exePath}
+            disabled={loading || !exePath || previewLayerString() === '~'}
             className="flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-5 py-2 text-xs font-semibold text-white shadow-lg shadow-indigo-600/20 transition disabled:opacity-50"
           >
             <Layers className="h-3.5 w-3.5" />
