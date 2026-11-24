@@ -69,6 +69,18 @@ class CliDiagnosis(BaseModel):
     summary: str
     suggested_commands: list[str] = Field(default_factory=list)
 
+    @property
+    def command(self) -> str:
+        return self.missing_command
+
+    @property
+    def suggested_command(self) -> str | None:
+        return self.suggested_commands[0] if self.suggested_commands else None
+
+    @property
+    def recommended_winget_id(self) -> str | None:
+        return self.winget_package_id
+
 
 NON_COMMAND_WORDS = {
     "error", "failed", "cannot", "fatal", "warning", "invalid", "unable", "exception",
@@ -136,7 +148,7 @@ def _search_disk_for_command(command: str) -> Path | str | None:
     return find_executable_on_disk(command)
 
 
-def diagnose_terminal_error(error_text: str) -> CliDiagnosis:
+def diagnose_terminal_error(error_text: str, folder_path: str | None = None) -> CliDiagnosis:
     """Diagnose a terminal command error through the 4-stage system probe."""
     cmd = extract_missing_command(error_text) or "unknown"
 

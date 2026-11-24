@@ -1,214 +1,231 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Shield,
-  Terminal,
-  Activity,
-  Layers,
-  Sparkles,
-  ChevronRight,
-  Sidebar,
-  Volume2,
-  Lock,
-} from 'lucide-react';
+import React, { useState } from "react";
+import { MotionConfig } from "framer-motion";
+import { Sidebar } from "./components/Sidebar";
+import { ChatWorkspace } from "./components/ChatWorkspace";
+import { TerminalPane } from "./components/TerminalPane";
+import type { ChatMessage, FixCardData, RepairSession, TerminalEntry } from "./types/workspace";
 
-import { WorkflowStep, WORKFLOW_STEPS } from './workflow/WorkflowFSM';
-import { useWorkflow } from './workflow/useWorkflow';
-import { StepperNav } from './components/StepperNav';
-import { TelemetryPanel } from './components/TelemetryPanel';
-import { VoiceGuidePlayer } from './components/VoiceGuidePlayer';
-import { useVoiceGuide } from './hooks/useVoiceGuide';
-
-// Steps
-import { Step0Recovery } from './steps/Step0Recovery';
-import { Step1TrustGate, PreFlightVerdict } from './steps/Step1TrustGate';
-import { Step2Install } from './steps/Step2Install';
-import { Step3Resilience } from './steps/Step3Resilience';
-import { Step4Inspect } from './steps/Step4Inspect';
-import { Step5Ledger } from './steps/Step5Ledger';
+const createSession = (): RepairSession => ({
+  id: `sess_${Math.random().toString(36).slice(2, 10)}`,
+  title: "New Repair Session",
+  folderPath: null,
+  messages: [],
+});
 
 export function App() {
-  const { state, telemetry, log, completeStep, navigateTo } = useWorkflow();
-  const voiceGuide = useVoiceGuide();
-  const [currentVerdict, setCurrentVerdict] = useState<PreFlightVerdict | null>(null);
-  const [showTelemetry, setShowTelemetry] = useState<boolean>(true);
+  const [sessions, setSessions] = useState<RepairSession[]>([createSession()]);
+  const [activeId, setActiveId] = useState<string>(sessions[0].id);
+  const [terminalOpen, setTerminalOpen] = useState(true);
+  const [terminalCwd, setTerminalCwd] = useState("C:\\Users\\User\\Downloads\\SILENTFIX");
+  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
+  const [terminalDraft, setTerminalDraft] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [isRepairingFolder, setIsRepairingFolder] = useState(false);
+  const [isRunningCmd, setIsRunningCmd] = useState(false);
 
-  const handleVoiceAlert = (text: string, type: string) => {
-    voiceGuide.speak(text, type);
+  const activeSession = sessions.find((s) => s.id === activeId) ?? sessions[0];
+
+  const appendMessages = (sessionId: string, newMsgs: ChatMessage[], newTitle?: string, folderPath?: string) => {
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              title: newTitle && s.messages.length === 0 ? newTitle : s.title,
+              folderPath: folderPath ?? s.folderPath,
+              messages: [...s.messages, ...newMsgs],
+            }
+          : s
+      )
+    );
   };
 
-  const handleResetWorkflow = () => {
-    navigateTo(WorkflowStep.RECOVERY);
+  const handleNewSession = () => {
+    const fresh = createSession();
+    setSessions((prev) => [fresh, ...prev]);
+    setActiveId(fresh.id);
+  };
+
+  const handleSendMessage = async (text: string) => {
+    const userMsg: ChatMessage = {
+      id: `m_${Date.now()}_u`,
+      role: "user",
+      text,
+      timestamp: new Date().toISOString(),
+    };
+    appendMessages(activeSession.id, [userMsg], text.slice(0, 32));
+    setIsSending(true);
+
+    try {
+      const res = await fetch("/api/workspace/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: activeSession.id,
+          message: text,
+          folder_path: activeSession.folderPath,
+        }),
+      });
+      const data = (await res.json()) as { reply: string; fix_card?: FixCardData | null };
+      appendMessages(activeSession.id, [
+        {
+          id: `m_${Date.now()}_a`,
+          role: "assistant",
+          text: data.reply,
+          fixCard: data.fix_card ?? null,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } catch {
+      appendMessages(activeSession.id, [
+        {
+          id: `m_${Date.now()}_err`,
+          role: "assistant",
+          text: "Could not reach the SilentFix backend on port 8000.",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleRepairFolder = async (folderPath: string) => {
+    setIsRepairingFolder(true);
+    try {
+      const res = await fetch("/api/workspace/repair-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_path: folderPath }),
+      });
+      if (!res.ok) {
+        const err = (await res.json()) as { detail?: string };
+        throw new Error(err.detail || "Folder scan failed");
+      }
+      const data = (await res.json()) as {
+        folder_path: string;
+        detected_files: string[];
+        plain_explanation: string;
+        sandbox_verdict: string;
+        sandbox_backend: string;
+        safe_commands: string[];
+      };
+
+      setTerminalCwd(data.folder_path);
+      appendMessages(
+        activeSession.id,
+        [
+          {
+            id: `m_${Date.now()}_f`,
+            role: "assistant",
+            text: data.plain_explanation,
+            fixCard: {
+              title: `Folder Repair (${data.detected_files.slice(0, 3).join(", ") || "Scanned"})`,
+              explanation: data.plain_explanation,
+              command: data.safe_commands[0] ?? null,
+              filter_status: data.sandbox_verdict === "PASSED" ? "SANDBOX_PASSED" : "VERIFIED_SAFE",
+              filter_notes: [
+                `AWS Sandbox: ${data.sandbox_verdict} (${data.sandbox_backend})`,
+                "Packages verified safe before local execution",
+              ],
+            },
+            timestamp: new Date().toISOString(),
+          },
+        ],
+        folderPath.split(/[\\/]/).pop() || "Folder Repair",
+        data.folder_path
+      );
+    } catch (err) {
+      appendMessages(activeSession.id, [
+        {
+          id: `m_${Date.now()}_ferr`,
+          role: "assistant",
+          text: err instanceof Error ? err.message : "Could not inspect folder.",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setIsRepairingFolder(false);
+    }
+  };
+
+  const handleRunTerminalCommand = async (cmd: string) => {
+    setIsRunningCmd(true);
+    try {
+      const res = await fetch("/api/terminal/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: activeSession.id,
+          command: cmd,
+          cwd: terminalCwd,
+        }),
+      });
+      const data = (await res.json()) as {
+        command: string;
+        cwd: string;
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+        blocked: boolean;
+      };
+      setTerminalCwd(data.cwd);
+      setTerminalEntries((prev) => [
+        ...prev,
+        {
+          id: `t_${Date.now()}`,
+          cwd: data.cwd,
+          command: data.command,
+          stdout: data.stdout,
+          stderr: data.stderr,
+          exitCode: data.exit_code,
+          blocked: data.blocked,
+        },
+      ]);
+    } finally {
+      setIsRunningCmd(false);
+    }
   };
 
   return (
-    <div className="h-screen w-screen bg-obsidian text-slate-100 flex flex-col overflow-hidden select-none">
-      {/* Top Application Bar */}
-      <header className="h-14 shrink-0 border-b border-glass bg-obsidian/90 backdrop-blur-md px-4 flex items-center justify-between gap-4 z-40">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-tr from-indigo-500 to-violet-600 text-white font-bold shadow-glow-indigo">
-            <Shield className="h-4 w-4" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-sm tracking-tight text-white">SilentFix</span>
-              <span className="rounded bg-indigo-500/10 border border-indigo-500/20 px-1.5 py-0.2 text-[9px] font-mono text-indigo-300">
-                v2.0 Resilience Blueprint
-              </span>
-            </div>
-            <p className="text-[10px] text-slate-500 font-mono">
-              Deterministic Privilege Boundary &bull; shell=False
-            </p>
-          </div>
-        </div>
+    <MotionConfig reducedMotion="user">
+      <div className="h-screen w-screen overflow-hidden flex bg-[#0B0D12] text-zinc-100">
+        <Sidebar
+          sessions={sessions}
+          activeSessionId={activeSession.id}
+          onSelectSession={setActiveId}
+          onNewSession={handleNewSession}
+          onRepairFolder={handleRepairFolder}
+          isRepairingFolder={isRepairingFolder}
+        />
 
-        {/* Center Active Step Breadcrumb */}
-        <div className="hidden md:flex items-center gap-2 text-xs font-mono">
-          <span className="text-slate-500">Step {state.currentStep + 1} of {WORKFLOW_STEPS.length}:</span>
-          <span className="font-bold text-indigo-300">
-            {WORKFLOW_STEPS[state.currentStep].label}
-          </span>
-        </div>
+        <ChatWorkspace
+          messages={activeSession.messages}
+          activeFolder={activeSession.folderPath}
+          isLoading={isSending}
+          terminalOpen={terminalOpen}
+          onToggleTerminal={() => setTerminalOpen((v) => !v)}
+          onSendMessage={handleSendMessage}
+          onPasteToTerminal={(cmd) => {
+            setTerminalOpen(true);
+            setTerminalDraft(cmd);
+          }}
+        />
 
-        {/* Right Badges & Controls */}
-        <div className="flex items-center gap-2">
-          <div className="hidden lg:flex items-center gap-1.5 text-[10px] font-mono font-semibold">
-            <span className="rounded-md border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-indigo-300">
-              ZERO SHELL INJECTION
-            </span>
-            <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-300">
-              WAL RECOVERY READY
-            </span>
-          </div>
-
-          <button
-            onClick={() => setShowTelemetry(!showTelemetry)}
-            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-mono transition ${
-              showTelemetry
-                ? 'border-indigo-500/40 bg-indigo-950/40 text-indigo-300'
-                : 'border-glass bg-black/40 text-slate-400 hover:text-slate-200'
-            }`}
-            title="Toggle Live Telemetry Inspector"
-          >
-            <Activity className="h-3.5 w-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Telemetry</span>
-            <span className="text-[10px] text-indigo-400 font-bold">({telemetry.length})</span>
-          </button>
-        </div>
-      </header>
-
-      {/* Main IDE-style Workspace Layout */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar: Workflow Stepper FSM Navigation */}
-        <aside className="w-56 shrink-0 border-r border-glass bg-black/30 flex flex-col justify-between overflow-y-auto">
-          <StepperNav state={state} onNavigate={navigateTo} />
-
-          {/* Sidebar Footer Safety Summary */}
-          <div className="p-3 border-t border-glass text-[10px] text-slate-500 font-mono space-y-1">
-            <div className="flex items-center gap-1 text-indigo-400 font-semibold">
-              <Lock className="h-3 w-3" />
-              <span>Privilege Boundary</span>
-            </div>
-            <p className="leading-tight">
-              Steps unlock sequentially. Future actions cannot be called out of order.
-            </p>
-          </div>
-        </aside>
-
-        {/* Center Panel: Active Step Content Area */}
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Voice Accessibility Bar */}
-          <VoiceGuidePlayer voiceGuide={voiceGuide} />
-
-          {/* Step Execution Area with AnimatePresence */}
-          <AnimatePresence mode="wait">
-            {state.currentStep === WorkflowStep.RECOVERY && (
-              <Step0Recovery
-                key="step-recovery"
-                onComplete={() => completeStep(WorkflowStep.RECOVERY)}
-                onLog={log}
-                onVoiceAlert={handleVoiceAlert}
-              />
-            )}
-
-            {state.currentStep === WorkflowStep.TRUST_GATE && (
-              <Step1TrustGate
-                key="step-trust-gate"
-                verdict={currentVerdict}
-                onTokenMinted={(v) => setCurrentVerdict(v)}
-                onComplete={() => completeStep(WorkflowStep.TRUST_GATE)}
-                onLog={log}
-                onVoiceAlert={handleVoiceAlert}
-              />
-            )}
-
-            {state.currentStep === WorkflowStep.INSTALL && (
-              <Step2Install
-                key="step-install"
-                currentVerdict={currentVerdict}
-                onComplete={() => completeStep(WorkflowStep.INSTALL)}
-                onLog={log}
-                onVoiceAlert={handleVoiceAlert}
-              />
-            )}
-
-            {state.currentStep === WorkflowStep.RESILIENCE && (
-              <Step3Resilience
-                key="step-resilience"
-                onComplete={() => completeStep(WorkflowStep.RESILIENCE)}
-                onLog={log}
-                onVoiceAlert={handleVoiceAlert}
-              />
-            )}
-
-            {state.currentStep === WorkflowStep.INSPECT && (
-              <Step4Inspect
-                key="step-inspect"
-                onComplete={() => completeStep(WorkflowStep.INSPECT)}
-                onLog={log}
-                onVoiceAlert={handleVoiceAlert}
-              />
-            )}
-
-            {state.currentStep === WorkflowStep.LEDGER && (
-              <Step5Ledger
-                key="step-ledger"
-                onComplete={() => completeStep(WorkflowStep.LEDGER)}
-                onResetWorkflow={handleResetWorkflow}
-                onLog={log}
-              />
-            )}
-          </AnimatePresence>
-        </main>
-
-        {/* Right Sidebar: Live Telemetry & Inspector Panel */}
-        {showTelemetry && (
-          <aside className="w-80 shrink-0 border-l border-glass bg-black/40 flex flex-col overflow-hidden">
-            <TelemetryPanel entries={telemetry} />
-          </aside>
+        {terminalOpen && (
+          <TerminalPane
+            sessionId={activeSession.id}
+            cwd={terminalCwd}
+            entries={terminalEntries}
+            draftCommand={terminalDraft}
+            onDraftChange={setTerminalDraft}
+            onRunCommand={handleRunTerminalCommand}
+            onClear={() => setTerminalEntries([])}
+            isRunning={isRunningCmd}
+          />
         )}
       </div>
-
-      {/* Footer System Status Bar */}
-      <footer className="h-7 shrink-0 border-t border-glass bg-obsidian px-4 flex items-center justify-between text-[10px] font-mono text-slate-500 z-40">
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            <span>FastAPI Backend: Online</span>
-          </span>
-          <span className="text-slate-700">&bull;</span>
-          <span>SQLite WAL: Ready</span>
-          <span className="text-slate-700">&bull;</span>
-          <span>ElevenLabs: Connected</span>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <span>Non-Shell Subprocess Executor Active</span>
-          <span className="text-slate-700">&bull;</span>
-          <span className="text-indigo-400">SilentFix Architecture v2.0</span>
-        </div>
-      </footer>
-    </div>
+    </MotionConfig>
   );
 }
 
