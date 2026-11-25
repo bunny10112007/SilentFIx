@@ -59,6 +59,11 @@ export interface FolderRepairJob {
   file_diffs: FileDiffEntry[];
 }
 
+export interface SelectiveApplyResult {
+  applied_files: string[];
+  backup_dir: string;
+}
+
 // --- Pillar 2: Broken CLI Isolator ---
 export interface EnvSnapshot {
   missing_command: string | null;

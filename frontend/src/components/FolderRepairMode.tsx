@@ -18,7 +18,7 @@ import {
   ShieldCheck,
   Terminal,
 } from "lucide-react";
-import type { FileDiffEntry, FolderRepairJob } from "../types/pillars";
+import type { FileDiffEntry, FolderRepairJob, SelectiveApplyResult } from "../types/pillars";
 
 interface FolderRepairModeProps {
   terminalOpen: boolean;
@@ -40,10 +40,7 @@ export const FolderRepairMode: React.FC<FolderRepairModeProps> = ({
 
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
-  const [applyResult, setApplyResult] = useState<{
-    applied_files: string[];
-    backup_dir: string;
-  } | null>(null);
+  const [applyResult, setApplyResult] = useState<SelectiveApplyResult | null>(null);
 
   const handleStartRepair = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
