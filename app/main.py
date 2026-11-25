@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.recovery import sweep_interrupted_sessions
-from app.routes import brain, cli_isolator, compat, folder_repair, healer, install_stream, recovery, sandbox, screen, voice
+from app.routes import brain, cli_isolator, compat, folder_repair, healer, install_stream, recovery, sandbox, screen, terminal_assistant, voice
 from app.routes.chatbot import router as chatbot_router
 from app.routes.terminal import router as terminal_router
 from app.routes.workspace import router as workspace_router
@@ -89,6 +89,7 @@ app.include_router(compat.router)
 app.include_router(sandbox.router)
 app.include_router(folder_repair.router)
 app.include_router(cli_isolator.router)
+app.include_router(terminal_assistant.router)
 app.include_router(terminal_router)
 app.include_router(workspace_router)
 app.include_router(chatbot_router)
