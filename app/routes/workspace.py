@@ -1,7 +1,9 @@
 # app/routes/workspace.py
 import asyncio
 import json
+import logging
 import os
+import re
 from pathlib import Path
 from typing import Literal
 from fastapi import APIRouter, HTTPException
@@ -13,7 +15,9 @@ from app.cloud.aws_sandbox import CloudPretestRequest, start_cloud_pretest
 from app.core.safety_filter import check_command_safety, sanitize_user_text
 from app.probes.cli_healer import diagnose_terminal_error
 
+logger = logging.getLogger("silentfix.workspace")
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
+_VALID_PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{2,80}$")
 
 
 class FixCard(BaseModel):
@@ -67,7 +71,6 @@ def _ask_gemini_sync(prompt: str, context: str) -> _GeminiFixSchema | None:
         return None
 
     model_id = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
-    client = genai.Client(api_key=api_key)
     sys_instruction = (
         "You are SilentFix, a friendly Windows troubleshooting assistant for students and everyday users. "
         "Explain the root cause in 1-3 simple, jargon-free sentences. "
@@ -75,17 +78,25 @@ def _ask_gemini_sync(prompt: str, context: str) -> _GeminiFixSchema | None:
         "Never use setx PATH, rm -rf, Invoke-Expression, or multi-line commands. "
         "If a missing software package needs installing, set package_to_pretest to its official winget ID."
     )
-    resp = client.models.generate_content(
-        model=model_id,
-        contents=f"Context:\n{context}\n\nUser request:\n{prompt}",
-        config=types.GenerateContentConfig(
-            system_instruction=sys_instruction,
-            response_mime_type="application/json",
-            response_schema=_GeminiFixSchema,
-            temperature=0.1,
-        ),
-    )
-    return _GeminiFixSchema.model_validate_json(resp.text)
+    try:
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=model_id,
+            contents=f"Context:\n{context}\n\nUser request:\n{prompt}",
+            config=types.GenerateContentConfig(
+                system_instruction=sys_instruction,
+                response_mime_type="application/json",
+                response_schema=_GeminiFixSchema,
+                temperature=0.1,
+            ),
+        )
+        if not resp.text:
+            return None
+        return _GeminiFixSchema.model_validate_json(resp.text)
+    except Exception as exc:
+        logger.warning("Gemini fallback triggered: %s", exc)
+        print(f"[SilentFix] Gemini fallback triggered: {exc}")
+        return None
 
 
 def _scan_broken_folder_sync(folder_path: str) -> tuple[list[str], str, str]:
@@ -102,8 +113,11 @@ def _scan_broken_folder_sync(folder_path: str) -> tuple[list[str], str, str]:
         candidate = root / name
         if candidate.is_file():
             detected.append(name)
-            text = candidate.read_text(encoding="utf-8", errors="replace")[:2500]
-            snippets.append(f"--- {name} ---\n{text}")
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")[:2500]
+                snippets.append(f"--- {name} ---\n{text}")
+            except OSError:
+                pass
             if name == "package.json":
                 default_pkg = "OpenJS.NodeJS.LTS"
 
@@ -112,8 +126,11 @@ def _scan_broken_folder_sync(folder_path: str) -> tuple[list[str], str, str]:
         if item.is_file() and item.suffix.lower() in {".exe", ".log"}:
             detected.append(item.name)
             if item.suffix.lower() == ".log":
-                log_tail = item.read_text(encoding="utf-8", errors="replace")[-1500:]
-                snippets.append(f"--- {item.name} (tail) ---\n{log_tail}")
+                try:
+                    log_tail = item.read_text(encoding="utf-8", errors="replace")[-1500:]
+                    snippets.append(f"--- {item.name} (tail) ---\n{log_tail}")
+                except OSError:
+                    pass
 
     summary = "\n\n".join(snippets) if snippets else "No standard manifests found; folder files: " + ", ".join(detected)
     return detected, summary, default_pkg
@@ -153,10 +170,14 @@ async def workspace_chat(req: WorkspaceChatRequest) -> WorkspaceChatResponse:
                 f'$u = [Environment]::GetEnvironmentVariable("Path","User"); '
                 f'[Environment]::SetEnvironmentVariable("Path","$u;{cli_diag.directory_to_add}","User")'
             )
-        elif cli_diag.status == "NOT_INSTALLED_WINGET_AVAILABLE" and cli_diag.recommended_winget_id:
+        elif cli_diag.status in ("NOT_INSTALLED_WINGET_AVAILABLE", "AVAILABLE_VIA_WINGET") and cli_diag.recommended_winget_id:
             fallback_cmd = f"winget install --id {cli_diag.recommended_winget_id} --exact --scope user --silent"
 
-        title = f"Fix for '{cli_diag.command}'" if cli_diag.command else "Local Diagnostic Result"
+        title = (
+            f"Fix for '{cli_diag.command}'"
+            if cli_diag.command and cli_diag.command != "unknown"
+            else "Local Diagnostic Result"
+        )
         explanation = cli_diag.summary
         proposed_cmd = fallback_cmd
     else:
@@ -223,8 +244,8 @@ async def repair_broken_folder(req: FolderRepairRequest) -> FolderRepairResponse
     package_id = default_pkg
     if ai_fix and ai_fix.terminal_command:
         candidate_commands.append(ai_fix.terminal_command)
-        if ai_fix.package_to_pretest:
-            package_id = ai_fix.package_to_pretest
+        if ai_fix.package_to_pretest and _VALID_PACKAGE_ID_RE.match(ai_fix.package_to_pretest.strip()):
+            package_id = ai_fix.package_to_pretest.strip()
         explanation = ai_fix.plain_explanation
     else:
         # Clean deterministic fallback based on detected manifests
