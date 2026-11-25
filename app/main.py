@@ -22,7 +22,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.recovery import sweep_interrupted_sessions
-from app.routes import brain, compat, healer, install_stream, recovery, sandbox, screen, voice
+from app.routes import brain, compat, folder_repair, healer, install_stream, recovery, sandbox, screen, voice
+from app.routes.chatbot import router as chatbot_router
 from app.routes.terminal import router as terminal_router
 from app.routes.workspace import router as workspace_router
 from app.state.db import init_db
@@ -86,8 +87,10 @@ app.include_router(brain.router)
 app.include_router(healer.router)
 app.include_router(compat.router)
 app.include_router(sandbox.router)
+app.include_router(folder_repair.router)
 app.include_router(terminal_router)
 app.include_router(workspace_router)
+app.include_router(chatbot_router)
 
 
 @app.get("/api/health")

@@ -14,6 +14,7 @@ __pycache__/
 # Database & Runtime Logs
 silentfix_state.db*
 .silentfix-logs/
+.silentfix-artifacts/
 *.log
 
 # Frontend Builds & Dependencies
