@@ -1,164 +1,31 @@
+// frontend/src/App.tsx
 import React, { useState } from "react";
 import { MotionConfig } from "framer-motion";
 import { Sidebar } from "./components/Sidebar";
-import { ChatWorkspace } from "./components/ChatWorkspace";
+import { AIChatbot } from "./components/AIChatbot";
 import { TerminalPane } from "./components/TerminalPane";
-import type { ChatMessage, FixCardData, RepairSession, TerminalEntry } from "./types/workspace";
-
-const createSession = (): RepairSession => ({
-  id: `sess_${Math.random().toString(36).slice(2, 10)}`,
-  title: "New Repair Session",
-  folderPath: null,
-  messages: [],
-});
+import { useSilentFixChat } from "./hooks/useSilentFixChat";
+import type { TerminalEntry } from "./types/workspace";
 
 export function App() {
-  const [sessions, setSessions] = useState<RepairSession[]>([createSession()]);
-  const [activeId, setActiveId] = useState<string>(sessions[0].id);
+  const chat = useSilentFixChat();
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [terminalCwd, setTerminalCwd] = useState("C:\\Users\\User\\Downloads\\SILENTFIX");
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
   const [terminalDraft, setTerminalDraft] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [isRepairingFolder, setIsRepairingFolder] = useState(false);
   const [isRunningCmd, setIsRunningCmd] = useState(false);
 
-  const activeSession = sessions.find((s) => s.id === activeId) ?? sessions[0];
-
-  const appendMessages = (sessionId: string, newMsgs: ChatMessage[], newTitle?: string, folderPath?: string) => {
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === sessionId
-          ? {
-              ...s,
-              title: newTitle && s.messages.length === 0 ? newTitle : s.title,
-              folderPath: folderPath ?? s.folderPath,
-              messages: [...s.messages, ...newMsgs],
-            }
-          : s
-      )
-    );
-  };
-
-  const handleNewSession = () => {
-    const fresh = createSession();
-    setSessions((prev) => [fresh, ...prev]);
-    setActiveId(fresh.id);
-  };
-
-  const handleSendMessage = async (text: string) => {
-    const userMsg: ChatMessage = {
-      id: `m_${Date.now()}_u`,
-      role: "user",
-      text,
-      timestamp: new Date().toISOString(),
-    };
-    appendMessages(activeSession.id, [userMsg], text.slice(0, 32));
-    setIsSending(true);
-
-    try {
-      const res = await fetch("/api/workspace/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: activeSession.id,
-          message: text,
-          folder_path: activeSession.folderPath,
-        }),
-      });
-      const data = (await res.json()) as { reply: string; fix_card?: FixCardData | null };
-      appendMessages(activeSession.id, [
-        {
-          id: `m_${Date.now()}_a`,
-          role: "assistant",
-          text: data.reply,
-          fixCard: data.fix_card ?? null,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    } catch {
-      appendMessages(activeSession.id, [
-        {
-          id: `m_${Date.now()}_err`,
-          role: "assistant",
-          text: "Could not reach the SilentFix backend on port 8000.",
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  const handleRepairFolder = async (folderPath: string) => {
-    setIsRepairingFolder(true);
-    try {
-      const res = await fetch("/api/workspace/repair-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder_path: folderPath }),
-      });
-      if (!res.ok) {
-        const err = (await res.json()) as { detail?: string };
-        throw new Error(err.detail || "Folder scan failed");
-      }
-      const data = (await res.json()) as {
-        folder_path: string;
-        detected_files: string[];
-        plain_explanation: string;
-        sandbox_verdict: string;
-        sandbox_backend: string;
-        safe_commands: string[];
-      };
-
-      setTerminalCwd(data.folder_path);
-      appendMessages(
-        activeSession.id,
-        [
-          {
-            id: `m_${Date.now()}_f`,
-            role: "assistant",
-            text: data.plain_explanation,
-            fixCard: {
-              title: `Folder Repair (${data.detected_files.slice(0, 3).join(", ") || "Scanned"})`,
-              explanation: data.plain_explanation,
-              command: data.safe_commands[0] ?? null,
-              filter_status: data.sandbox_verdict === "PASSED" ? "SANDBOX_PASSED" : "VERIFIED_SAFE",
-              filter_notes: [
-                `AWS Sandbox: ${data.sandbox_verdict} (${data.sandbox_backend})`,
-                "Packages verified safe before local execution",
-              ],
-            },
-            timestamp: new Date().toISOString(),
-          },
-        ],
-        folderPath.split(/[\\/]/).pop() || "Folder Repair",
-        data.folder_path
-      );
-    } catch (err) {
-      appendMessages(activeSession.id, [
-        {
-          id: `m_${Date.now()}_ferr`,
-          role: "assistant",
-          text: err instanceof Error ? err.message : "Could not inspect folder.",
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setIsRepairingFolder(false);
-    }
-  };
-
   const handleRunTerminalCommand = async (cmd: string) => {
+    setTerminalOpen(true);
     setIsRunningCmd(true);
     try {
       const res = await fetch("/api/terminal/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_id: activeSession.id,
+          session_id: chat.activeSession.id,
           command: cmd,
-          cwd: terminalCwd,
+          cwd: chat.activeSession.folderPath ?? terminalCwd,
         }),
       });
       const data = (await res.json()) as {
@@ -191,30 +58,41 @@ export function App() {
     <MotionConfig reducedMotion="user">
       <div className="h-screen w-screen overflow-hidden flex bg-[#0B0D12] text-zinc-100">
         <Sidebar
-          sessions={sessions}
-          activeSessionId={activeSession.id}
-          onSelectSession={setActiveId}
-          onNewSession={handleNewSession}
-          onRepairFolder={handleRepairFolder}
-          isRepairingFolder={isRepairingFolder}
+          sessions={chat.sessions.map((s) => ({
+            id: s.id,
+            title: s.title,
+            folderPath: s.folderPath,
+            messages: [],
+          }))}
+          activeSessionId={chat.activeId}
+          onSelectSession={chat.setActiveId}
+          onNewSession={chat.newSession}
+          onRepairFolder={chat.runFolderScan}
+          isRepairingFolder={chat.isThinking}
         />
 
-        <ChatWorkspace
-          messages={activeSession.messages}
-          activeFolder={activeSession.folderPath}
-          isLoading={isSending}
+        <AIChatbot
+          messages={chat.activeSession.messages}
+          activeFolder={chat.activeSession.folderPath}
+          isThinking={chat.isThinking}
+          thinkingStage={chat.thinkingStage}
           terminalOpen={terminalOpen}
           onToggleTerminal={() => setTerminalOpen((v) => !v)}
-          onSendMessage={handleSendMessage}
+          onSendMessage={chat.sendMessage}
+          onCancelRequest={chat.cancelRequest}
+          onAttachFolder={chat.setFolderContext}
           onPasteToTerminal={(cmd) => {
             setTerminalOpen(true);
             setTerminalDraft(cmd);
           }}
+          onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+          onTriggerSandbox={chat.runCloudPretest}
+          onTriggerFolderScan={chat.runFolderScan}
         />
 
         {terminalOpen && (
           <TerminalPane
-            sessionId={activeSession.id}
+            sessionId={chat.activeSession.id}
             cwd={terminalCwd}
             entries={terminalEntries}
             draftCommand={terminalDraft}

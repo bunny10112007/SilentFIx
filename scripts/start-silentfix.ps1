@@ -24,4 +24,8 @@ if (-not $NoBrowser) {
 }
 
 # Launch FastAPI without --reload on Windows so ProactorEventLoop handles asyncio.create_subprocess_exec cleanly
-python -m uvicorn app.main:app --host $HostAddress --port $Port
+if (Get-Command uv -ErrorAction SilentlyContinue) {
+    uv run uvicorn app.main:app --host $HostAddress --port $Port
+} else {
+    python -m uvicorn app.main:app --host $HostAddress --port $Port
+}
