@@ -5,7 +5,9 @@ import pytest
 
 from app.core.safety_filter import check_command_safety, sanitize_user_text
 from app.main import app
+from app.probes import cli_healer
 from app.routes import voice as voice_route
+from app.routes import workspace as workspace_route
 
 
 @pytest.fixture
@@ -105,3 +107,28 @@ async def test_repair_folder_scans_and_pretests_in_sandbox(client, tmp_path: Pat
     assert "package.json" in body["detected_files"]
     assert body["sandbox_verdict"] == "PASSED"
     assert "npm ci" in body["safe_commands"]
+
+
+async def test_workspace_chat_falls_back_cleanly_on_gemini_api_error(client, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test_invalid_key")
+    monkeypatch.setattr(cli_healer, "_search_disk_for_command", lambda _cmd: None)
+
+    class BrokenModels:
+        def generate_content(self, *args, **kwargs):
+            raise RuntimeError("404 NOT_FOUND: model unavailable")
+
+    class BrokenClient:
+        def __init__(self, *args, **kwargs):
+            self.models = BrokenModels()
+
+    monkeypatch.setattr(workspace_route.genai, "Client", BrokenClient)
+
+    res = await client.post(
+        "/api/workspace/chat",
+        json={"session_id": "s1", "message": "'git' is not recognized as an internal or external command"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["reply"]
+    assert body["fix_card"] is not None
+    assert body["fix_card"]["filter_status"] in {"VERIFIED_SAFE", "INFO_ONLY"}

@@ -26,7 +26,7 @@ SandboxVerdict = Literal["QUEUED", "RUNNING", "PASSED", "NEEDS_COMPAT_SHIM", "FA
 
 class CloudPretestRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
-    package_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
+    package_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9.+_-]{2,80}$")
     source: Literal["winget", "msstore"] = "winget"
     scope: Literal["user", "machine"] = "user"
 

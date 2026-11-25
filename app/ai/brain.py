@@ -236,7 +236,7 @@ async def plan_intent_with_gemini(prompt: str, context: Optional[dict[str, Any]]
     is absent or request fails.
     """
     gemini_api_key = os.getenv("GEMINI_API_KEY")
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
     if not gemini_api_key or not gemini_api_key.strip():
         logger.info("GEMINI_API_KEY not configured; using deterministic intent engine.")

@@ -140,3 +140,33 @@ def restore_compatibility_shim(executable_path: str, previous_layer: str | None)
     except Exception as exc:
         logger.error("Failed to restore compatibility shim: %s", exc)
         return False
+
+
+_MISSING_RUNTIME_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        (
+            "vcruntime140",
+            "vcruntime140_1",
+            "msvcp140",
+            "concrt140",
+            "vcomp140",
+            "mfc140",
+            "api-ms-win-crt",
+        ),
+        "Microsoft.VCRedist.2015+.x64",
+    ),
+    (("msvcr120", "msvcp120"), "Microsoft.VCRedist.2013.x64"),
+    (("msvcr110", "msvcp110"), "Microsoft.VCRedist.2012.x64"),
+    (("msvcr100", "msvcp100"), "Microsoft.VCRedist.2010.x64"),
+    (("d3dx9", "xinput1_3", "x3daudio"), "Microsoft.DirectX"),
+    (("webview2loader",), "Microsoft.EdgeWebView2Runtime"),
+)
+
+
+def suggest_missing_runtime(error_text: str) -> str | None:
+    """Return an official Winget runtime package ID if the text mentions a known missing DLL."""
+    lowered = error_text.lower()
+    for markers, winget_id in _MISSING_RUNTIME_MAP:
+        if any(marker in lowered for marker in markers):
+            return winget_id
+    return None
