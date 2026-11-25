@@ -4,16 +4,26 @@ import { MotionConfig } from "framer-motion";
 import { Sidebar } from "./components/Sidebar";
 import { AIChatbot } from "./components/AIChatbot";
 import { TerminalPane } from "./components/TerminalPane";
+import { FolderRepairMode } from "./components/FolderRepairMode";
+import { CliIsolatorMode } from "./components/CliIsolatorMode";
+import { TerminalAssistantMode } from "./components/TerminalAssistantMode";
 import { useSilentFixChat } from "./hooks/useSilentFixChat";
 import type { TerminalEntry } from "./types/workspace";
+import type { WorkspaceMode } from "./types/pillars";
 
 export function App() {
   const chat = useSilentFixChat();
+  const [activeMode, setActiveMode] = useState<WorkspaceMode>("folder_repair");
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [terminalCwd, setTerminalCwd] = useState("C:\\Users\\User\\Downloads\\SILENTFIX");
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
   const [terminalDraft, setTerminalDraft] = useState("");
   const [isRunningCmd, setIsRunningCmd] = useState(false);
+
+  const handlePasteToTerminal = (cmd: string) => {
+    setTerminalOpen(true);
+    setTerminalDraft(cmd);
+  };
 
   const handleRunTerminalCommand = async (cmd: string) => {
     setTerminalOpen(true);
@@ -58,6 +68,8 @@ export function App() {
     <MotionConfig reducedMotion="user">
       <div className="h-screen w-screen overflow-hidden flex bg-[#0B0D12] text-zinc-100">
         <Sidebar
+          activeMode={activeMode}
+          onSelectMode={setActiveMode}
           sessions={chat.sessions.map((s) => ({
             id: s.id,
             title: s.title,
@@ -67,28 +79,56 @@ export function App() {
           activeSessionId={chat.activeId}
           onSelectSession={chat.setActiveId}
           onNewSession={chat.newSession}
-          onRepairFolder={chat.runFolderScan}
+          onRepairFolder={async (folderPath) => {
+            await chat.runFolderScan(folderPath);
+            setActiveMode("chat");
+          }}
           isRepairingFolder={chat.isThinking}
         />
 
-        <AIChatbot
-          messages={chat.activeSession.messages}
-          activeFolder={chat.activeSession.folderPath}
-          isThinking={chat.isThinking}
-          thinkingStage={chat.thinkingStage}
-          terminalOpen={terminalOpen}
-          onToggleTerminal={() => setTerminalOpen((v) => !v)}
-          onSendMessage={chat.sendMessage}
-          onCancelRequest={chat.cancelRequest}
-          onAttachFolder={chat.setFolderContext}
-          onPasteToTerminal={(cmd) => {
-            setTerminalOpen(true);
-            setTerminalDraft(cmd);
-          }}
-          onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
-          onTriggerSandbox={chat.runCloudPretest}
-          onTriggerFolderScan={chat.runFolderScan}
-        />
+        {activeMode === "folder_repair" && (
+          <FolderRepairMode
+            terminalOpen={terminalOpen}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+            onPasteToTerminal={handlePasteToTerminal}
+          />
+        )}
+
+        {activeMode === "cli_isolator" && (
+          <CliIsolatorMode
+            terminalOpen={terminalOpen}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+            onPasteToTerminal={handlePasteToTerminal}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+          />
+        )}
+
+        {activeMode === "terminal_assistant" && (
+          <TerminalAssistantMode
+            terminalOpen={terminalOpen}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+            onPasteToTerminal={handlePasteToTerminal}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+          />
+        )}
+
+        {activeMode === "chat" && (
+          <AIChatbot
+            messages={chat.activeSession.messages}
+            activeFolder={chat.activeSession.folderPath}
+            isThinking={chat.isThinking}
+            thinkingStage={chat.thinkingStage}
+            terminalOpen={terminalOpen}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+            onSendMessage={chat.sendMessage}
+            onCancelRequest={chat.cancelRequest}
+            onAttachFolder={chat.setFolderContext}
+            onPasteToTerminal={handlePasteToTerminal}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+            onTriggerSandbox={chat.runCloudPretest}
+            onTriggerFolderScan={chat.runFolderScan}
+          />
+        )}
 
         {terminalOpen && (
           <TerminalPane
