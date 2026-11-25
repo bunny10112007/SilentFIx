@@ -4,7 +4,7 @@ import { MotionConfig } from "framer-motion";
 import { Sidebar } from "./components/Sidebar";
 import { AIChatbot } from "./components/AIChatbot";
 import { TerminalPane } from "./components/TerminalPane";
-import { FolderRepairMode } from "./components/FolderRepairMode";
+import { FolderRepairPanel } from "./components/FolderRepairPanel";
 import { CliIsolatorMode } from "./components/CliIsolatorMode";
 import { TerminalAssistantMode } from "./components/TerminalAssistantMode";
 import { useSilentFixChat } from "./hooks/useSilentFixChat";
@@ -87,10 +87,13 @@ export function App() {
         />
 
         {activeMode === "folder_repair" && (
-          <FolderRepairMode
-            terminalOpen={terminalOpen}
-            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+          <FolderRepairPanel
+            onSelectWorkingDir={(folderPath) => {
+              setTerminalCwd(folderPath);
+              chat.setFolderContext(folderPath);
+            }}
             onPasteToTerminal={handlePasteToTerminal}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
           />
         )}
 
