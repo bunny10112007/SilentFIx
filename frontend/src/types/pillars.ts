@@ -1,5 +1,10 @@
-// frontend/src/types/pillars.ts
+export type WorkspaceMode =
+  | "folder_repair"
+  | "cli_isolator"
+  | "terminal_assistant"
+  | "chat";
 
+// --- Pillar 1: Folder & Legacy Repair ---
 export interface FolderIssue {
   severity: "error" | "warning";
   category: "missing_dependency" | "runtime_dll" | "crash_log" | "display_dpi";
@@ -59,6 +64,7 @@ export interface SelectiveApplyResult {
   backup_dir: string;
 }
 
+// --- Pillar 2: Broken CLI Isolator ---
 export interface EnvSnapshot {
   missing_command: string | null;
   current_path_entries: string[];
@@ -85,6 +91,7 @@ export interface CliIsolationReport {
   tested_hypotheses: HypothesisTestResult[];
 }
 
+// --- Pillar 3: Terminal Assistant ---
 export interface FlagExplanation {
   part: string;
   meaning: string;

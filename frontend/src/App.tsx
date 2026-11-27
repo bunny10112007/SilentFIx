@@ -5,17 +5,26 @@ import { Sidebar } from "./components/Sidebar";
 import { AIChatbot } from "./components/AIChatbot";
 import { CliIsolatorPanel } from "./components/CliIsolatorPanel";
 import { TerminalPane } from "./components/TerminalPane";
+import { FolderRepairPanel } from "./components/FolderRepairPanel";
+import { CliIsolatorMode } from "./components/CliIsolatorMode";
+import { TerminalAssistantMode } from "./components/TerminalAssistantMode";
 import { useSilentFixChat } from "./hooks/useSilentFixChat";
 import type { TerminalEntry } from "./types/workspace";
+import type { WorkspaceMode } from "./types/pillars";
 
 export function App() {
   const chat = useSilentFixChat();
-  const [activeMode, setActiveMode] = useState<"chat" | "cli_isolator">("cli_isolator");
+  const [activeMode, setActiveMode] = useState<WorkspaceMode>("folder_repair");
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [terminalCwd, setTerminalCwd] = useState("C:\\Users\\User\\Downloads\\SILENTFIX");
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
   const [terminalDraft, setTerminalDraft] = useState("");
   const [isRunningCmd, setIsRunningCmd] = useState(false);
+
+  const handlePasteToTerminal = (cmd: string) => {
+    setTerminalOpen(true);
+    setTerminalDraft(cmd);
+  };
 
   const handleRunTerminalCommand = async (cmd: string) => {
     setTerminalOpen(true);
@@ -74,20 +83,43 @@ export function App() {
             setActiveMode("chat");
           }}
           onNewSession={chat.newSession}
-          onRepairFolder={chat.runFolderScan}
+          onRepairFolder={async (folderPath) => {
+            await chat.runFolderScan(folderPath);
+            setActiveMode("chat");
+          }}
           isRepairingFolder={chat.isThinking}
         />
 
-        {activeMode === "cli_isolator" ? (
-          <CliIsolatorPanel
-            activeFolder={chat.activeSession.folderPath}
-            onPasteToTerminal={(cmd) => {
-              setTerminalOpen(true);
-              setTerminalDraft(cmd);
+        {activeMode === "folder_repair" && (
+          <FolderRepairPanel
+            onSelectWorkingDir={(folderPath) => {
+              setTerminalCwd(folderPath);
+              chat.setFolderContext(folderPath);
             }}
+            onPasteToTerminal={handlePasteToTerminal}
             onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
           />
-        ) : (
+        )}
+
+        {activeMode === "cli_isolator" && (
+          <CliIsolatorMode
+            terminalOpen={terminalOpen}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+            onPasteToTerminal={handlePasteToTerminal}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+          />
+        )}
+
+        {activeMode === "terminal_assistant" && (
+          <TerminalAssistantMode
+            terminalOpen={terminalOpen}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+            onPasteToTerminal={handlePasteToTerminal}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+          />
+        )}
+
+        {activeMode === "chat" && (
           <AIChatbot
             messages={chat.activeSession.messages}
             activeFolder={chat.activeSession.folderPath}
@@ -98,10 +130,7 @@ export function App() {
             onSendMessage={chat.sendMessage}
             onCancelRequest={chat.cancelRequest}
             onAttachFolder={chat.setFolderContext}
-            onPasteToTerminal={(cmd) => {
-              setTerminalOpen(true);
-              setTerminalDraft(cmd);
-            }}
+            onPasteToTerminal={handlePasteToTerminal}
             onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
             onTriggerSandbox={chat.runCloudPretest}
             onTriggerFolderScan={chat.runFolderScan}
