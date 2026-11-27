@@ -3,12 +3,14 @@ import React, { useState } from "react";
 import { MotionConfig } from "framer-motion";
 import { Sidebar } from "./components/Sidebar";
 import { AIChatbot } from "./components/AIChatbot";
+import { CliIsolatorPanel } from "./components/CliIsolatorPanel";
 import { TerminalPane } from "./components/TerminalPane";
 import { useSilentFixChat } from "./hooks/useSilentFixChat";
 import type { TerminalEntry } from "./types/workspace";
 
 export function App() {
   const chat = useSilentFixChat();
+  const [activeMode, setActiveMode] = useState<"chat" | "cli_isolator">("cli_isolator");
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [terminalCwd, setTerminalCwd] = useState("C:\\Users\\User\\Downloads\\SILENTFIX");
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
@@ -58,6 +60,8 @@ export function App() {
     <MotionConfig reducedMotion="user">
       <div className="h-screen w-screen overflow-hidden flex bg-[#0B0D12] text-zinc-100">
         <Sidebar
+          activeMode={activeMode}
+          onSelectMode={setActiveMode}
           sessions={chat.sessions.map((s) => ({
             id: s.id,
             title: s.title,
@@ -65,30 +69,44 @@ export function App() {
             messages: [],
           }))}
           activeSessionId={chat.activeId}
-          onSelectSession={chat.setActiveId}
+          onSelectSession={(id) => {
+            chat.setActiveId(id);
+            setActiveMode("chat");
+          }}
           onNewSession={chat.newSession}
           onRepairFolder={chat.runFolderScan}
           isRepairingFolder={chat.isThinking}
         />
 
-        <AIChatbot
-          messages={chat.activeSession.messages}
-          activeFolder={chat.activeSession.folderPath}
-          isThinking={chat.isThinking}
-          thinkingStage={chat.thinkingStage}
-          terminalOpen={terminalOpen}
-          onToggleTerminal={() => setTerminalOpen((v) => !v)}
-          onSendMessage={chat.sendMessage}
-          onCancelRequest={chat.cancelRequest}
-          onAttachFolder={chat.setFolderContext}
-          onPasteToTerminal={(cmd) => {
-            setTerminalOpen(true);
-            setTerminalDraft(cmd);
-          }}
-          onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
-          onTriggerSandbox={chat.runCloudPretest}
-          onTriggerFolderScan={chat.runFolderScan}
-        />
+        {activeMode === "cli_isolator" ? (
+          <CliIsolatorPanel
+            activeFolder={chat.activeSession.folderPath}
+            onPasteToTerminal={(cmd) => {
+              setTerminalOpen(true);
+              setTerminalDraft(cmd);
+            }}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+          />
+        ) : (
+          <AIChatbot
+            messages={chat.activeSession.messages}
+            activeFolder={chat.activeSession.folderPath}
+            isThinking={chat.isThinking}
+            thinkingStage={chat.thinkingStage}
+            terminalOpen={terminalOpen}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+            onSendMessage={chat.sendMessage}
+            onCancelRequest={chat.cancelRequest}
+            onAttachFolder={chat.setFolderContext}
+            onPasteToTerminal={(cmd) => {
+              setTerminalOpen(true);
+              setTerminalDraft(cmd);
+            }}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+            onTriggerSandbox={chat.runCloudPretest}
+            onTriggerFolderScan={chat.runFolderScan}
+          />
+        )}
 
         {terminalOpen && (
           <TerminalPane

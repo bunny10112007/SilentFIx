@@ -3,6 +3,8 @@ import { FolderOpen, MessageSquare, Plus, ShieldCheck, Wrench } from "lucide-rea
 import type { RepairSession } from "../types/workspace";
 
 interface SidebarProps {
+  activeMode?: "chat" | "cli_isolator";
+  onSelectMode?: (mode: "chat" | "cli_isolator") => void;
   sessions: RepairSession[];
   activeSessionId: string;
   onSelectSession: (id: string) => void;
@@ -12,6 +14,8 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
+  activeMode = "chat",
+  onSelectMode,
   sessions,
   activeSessionId,
   onSelectSession,
@@ -41,12 +45,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <button
           type="button"
-          onClick={onNewSession}
+          onClick={() => {
+            onNewSession();
+            onSelectMode?.("chat");
+          }}
           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium text-zinc-100 transition"
         >
           <Plus className="w-4 h-4 text-zinc-300" />
           New Conversation
         </button>
+
+        {onSelectMode && (
+          <button
+            type="button"
+            onClick={() => onSelectMode(activeMode === "cli_isolator" ? "chat" : "cli_isolator")}
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition ${
+              activeMode === "cli_isolator"
+                ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-100"
+                : "bg-white/5 hover:bg-white/10 border-white/10 text-zinc-200"
+            }`}
+          >
+            <Wrench className="w-4 h-4 text-indigo-300" />
+            Broken CLI Isolator
+          </button>
+        )}
 
         <button
           type="button"
