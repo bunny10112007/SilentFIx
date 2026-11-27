@@ -1,18 +1,14 @@
 // frontend/src/App.tsx
 import React, { useState } from "react";
 import { MotionConfig } from "framer-motion";
-import {
-  FolderOpen,
-  PanelRightClose,
-  PanelRightOpen,
-  ShieldCheck,
-  Terminal,
-  Wrench,
-} from "lucide-react";
-import { FolderRepairPanel } from "./components/FolderRepairPanel";
+import { Sidebar } from "./components/Sidebar";
+import { AIChatbot } from "./components/AIChatbot";
 import { CliIsolatorPanel } from "./components/CliIsolatorPanel";
-import { TerminalAssistantPanel } from "./components/TerminalAssistantPanel";
 import { TerminalPane } from "./components/TerminalPane";
+import { FolderRepairPanel } from "./components/FolderRepairPanel";
+import { CliIsolatorMode } from "./components/CliIsolatorMode";
+import { TerminalAssistantMode } from "./components/TerminalAssistantMode";
+import { useSilentFixChat } from "./hooks/useSilentFixChat";
 import type { TerminalEntry } from "./types/workspace";
 
 type PillarMode = "folder_repair" | "cli_isolator" | "terminal_assistant";
@@ -107,40 +103,38 @@ export function App() {
   return (
     <MotionConfig reducedMotion="user">
       <div className="h-screen w-screen overflow-hidden flex bg-[#0B0D12] text-zinc-100">
-        {/* Left Navigation Rail */}
-        <aside className="w-60 shrink-0 bg-[#0E1015] border-r border-white/10 flex flex-col justify-between p-3 select-none">
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 px-2 py-1.5">
-              <ShieldCheck className="w-5 h-5 text-indigo-400" />
-              <span className="font-semibold tracking-tight text-sm text-zinc-100">SilentFix</span>
-            </div>
+        <Sidebar
+          activeMode={activeMode}
+          onSelectMode={setActiveMode}
+          sessions={chat.sessions.map((s) => ({
+            id: s.id,
+            title: s.title,
+            folderPath: s.folderPath,
+            messages: [],
+          }))}
+          activeSessionId={chat.activeId}
+          onSelectSession={(id) => {
+            chat.setActiveId(id);
+            setActiveMode("chat");
+          }}
+          onNewSession={chat.newSession}
+          onRepairFolder={async (folderPath) => {
+            await chat.runFolderScan(folderPath);
+            setActiveMode("chat");
+          }}
+          isRepairingFolder={chat.isThinking}
+        />
 
-            <nav className="space-y-1.5">
-              {PILLAR_NAV.map((item) => {
-                const active = activePillar === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setActivePillar(item.id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-xl border transition flex items-start gap-2.5 ${
-                      active
-                        ? "bg-indigo-500/15 border-indigo-400/35 text-zinc-100"
-                        : "bg-transparent border-transparent text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
-                    }`}
-                  >
-                    <span className={active ? "text-indigo-300 mt-0.5" : "text-zinc-500 mt-0.5"}>
-                      {item.icon}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium truncate">{item.label}</p>
-                      <p className="text-[11px] text-zinc-500 truncate">{item.subtitle}</p>
-                    </div>
-                  </button>
-                );
-              })}
-            </nav>
-          </div>
+        {activeMode === "folder_repair" && (
+          <FolderRepairPanel
+            onSelectWorkingDir={(folderPath) => {
+              setTerminalCwd(folderPath);
+              chat.setFolderContext(folderPath);
+            }}
+            onPasteToTerminal={handlePasteToTerminal}
+            onRunInTerminal={(cmd) => void handleRunTerminalCommand(cmd)}
+          />
+        )}
 
           <div className="pt-3 border-t border-white/10 px-2 text-[11px] text-zinc-500 space-y-1">
             <div className="flex items-center gap-1.5 text-emerald-400">
