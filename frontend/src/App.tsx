@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { MotionConfig } from "framer-motion";
 import { Sidebar } from "./components/Sidebar";
 import { AIChatbot } from "./components/AIChatbot";
+import { CliIsolatorPanel } from "./components/CliIsolatorPanel";
 import { TerminalPane } from "./components/TerminalPane";
 import { FolderRepairPanel } from "./components/FolderRepairPanel";
 import { CliIsolatorMode } from "./components/CliIsolatorMode";
@@ -77,7 +78,10 @@ export function App() {
             messages: [],
           }))}
           activeSessionId={chat.activeId}
-          onSelectSession={chat.setActiveId}
+          onSelectSession={(id) => {
+            chat.setActiveId(id);
+            setActiveMode("chat");
+          }}
           onNewSession={chat.newSession}
           onRepairFolder={async (folderPath) => {
             await chat.runFolderScan(folderPath);
